@@ -1,4 +1,4 @@
-import { createMachine, interpret } from '../src/index';
+import { createMachine, createActor } from '../src/index.ts';
 
 describe('state meta data', () => {
   const pedestrianStates = {
@@ -29,7 +29,7 @@ describe('state meta data', () => {
   };
 
   const lightMachine = createMachine({
-    key: 'light',
+    id: 'light',
     initial: 'green',
     states: {
       green: {
@@ -73,18 +73,24 @@ describe('state meta data', () => {
   });
 
   it('states should aggregate meta data', () => {
-    const yellowState = lightMachine.transition('green', 'TIMER');
-    expect(yellowState.meta).toEqual({
+    const actorRef = createActor(lightMachine).start();
+    actorRef.send({ type: 'TIMER' });
+    const yellowState = actorRef.getSnapshot();
+
+    expect(yellowState.getMeta()).toEqual({
       'light.yellow': {
         yellowData: 'yellow data'
       }
     });
-    expect('light.green' in yellowState.meta).toBeFalsy();
-    expect('light' in yellowState.meta).toBeFalsy();
+    expect('light.green' in yellowState.getMeta()).toBeFalsy();
+    expect('light' in yellowState.getMeta()).toBeFalsy();
   });
 
   it('states should aggregate meta data (deep)', () => {
-    expect(lightMachine.transition('yellow', 'TIMER').meta).toEqual({
+    const actorRef = createActor(lightMachine).start();
+    actorRef.send({ type: 'TIMER' });
+    actorRef.send({ type: 'TIMER' });
+    expect(actorRef.getSnapshot().getMeta()).toEqual({
       'light.red': {
         redData: {
           nested: {
@@ -99,8 +105,8 @@ describe('state meta data', () => {
     });
   });
 
-  // https://github.com/davidkpiano/xstate/issues/1105
-  it('services started from a persisted state should calculate meta data', (done) => {
+  // https://github.com/statelyai/xstate/issues/1105
+  it('services started from a persisted state should calculate meta data', () => {
     const machine = createMachine({
       id: 'test',
       initial: 'first',
@@ -118,46 +124,16 @@ describe('state meta data', () => {
       }
     });
 
-    const service = interpret(machine).onTransition((state) => {
-      expect(state.meta).toEqual({
-        'test.second': {
-          name: 'second state'
-        }
-      });
-      done();
+    const actor = createActor(machine, {
+      snapshot: machine.resolveState({ value: 'second' })
     });
-    service.start('second');
-  });
-});
+    actor.start();
 
-describe('transition meta data', () => {
-  it('should show meta data in transitions', () => {
-    const machine = createMachine({
-      initial: 'inactive',
-      states: {
-        inactive: {
-          on: {
-            EVENT: {
-              target: 'active',
-              meta: {
-                description: 'Going from inactive to active'
-              }
-            }
-          }
-        },
-        active: {}
+    expect(actor.getSnapshot().getMeta()).toEqual({
+      'test.second': {
+        name: 'second state'
       }
     });
-
-    const nextState = machine.transition(undefined, 'EVENT');
-
-    expect(nextState.transitions.map((t) => t.meta)).toMatchInlineSnapshot(`
-      Array [
-        Object {
-          "description": "Going from inactive to active",
-        },
-      ]
-    `);
   });
 });
 

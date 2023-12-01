@@ -54,11 +54,11 @@ const optionsMachine = createMachine({
 
 By default, relative targets are [internal transitions](./transitions.md#internal-transitions), which means the parent state will _not_ exit and reenter. You can make relative targets external transitions by specifying `internal: false`:
 
-```js {4}
+```js {5}
 // ...
 on: {
   SELECT_FIRST: {
-    target: { target: '.first' },
+    target: '.first',
     internal: false // external transition, will exit/reenter parent state node
   }
 }
@@ -105,7 +105,6 @@ const lightMachine = createMachine({
 **Notes:**
 
 - IDs are always recommended for the root state node.
-- IDs are useful for SCXML compatibility, and conversion to/from SCXML will make use of IDs extensively.
 - Make sure that all IDs are unique in order to prevent naming conflicts. This is naturally enforced by the automatically generated IDs.
 
 ::: warning
@@ -127,27 +126,6 @@ red: {
 
 Then you cannot target the `'walking'` state via `'#redLight.walking'`, because its ID is resolved to `'#light.red.walking'`. A target that starts with `'#'` will always refer to the _exact match_ for the `'#[state node ID]'`.
 :::
-
-## SCXML
-
-IDs correspond to the definition of IDs in the SCXML spec:
-
-```js
-{
-  green: {
-    id: 'lightGreen';
-  }
-}
-```
-
-```xml
-<state id="lightGreen">
-  <!-- ... -->
-</state>
-```
-
-- [https://www.w3.org/TR/scxml/#IDs](https://www.w3.org/TR/scxml/#IDs) - specification that all `id` attributes _must_ be unique
-- [https://www.w3.org/TR/scxml/#state](https://www.w3.org/TR/scxml/#state) - see the definition of the `id` attribute in `<state>`
 
 ## Quick Reference
 

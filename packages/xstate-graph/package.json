@@ -1,6 +1,6 @@
 {
   "name": "@xstate/graph",
-  "version": "1.3.0",
+  "version": "2.0.0-beta.5",
   "description": "XState graph utilities",
   "keywords": [
     "state",
@@ -11,27 +11,39 @@
     "graph"
   ],
   "author": "David Khourshid <davidkpiano@gmail.com>",
-  "homepage": "https://github.com/davidkpiano/xstate/tree/main/packages/xstate-test#readme",
+  "homepage": "https://github.com/statelyai/xstate/tree/main/packages/xstate-test#readme",
   "license": "MIT",
   "main": "dist/xstate-graph.cjs.js",
   "module": "dist/xstate-graph.esm.js",
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/xstate-graph.cjs.mjs",
+        "default": "./dist/xstate-graph.cjs.js"
+      },
+      "module": "./dist/xstate-graph.esm.js",
+      "import": "./dist/xstate-graph.cjs.mjs",
+      "default": "./dist/xstate-graph.cjs.js"
+    },
+    "./package.json": "./package.json"
+  },
   "sideEffects": false,
   "files": [
     "dist"
   ],
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/davidkpiano/xstate.git"
+    "url": "git+ssh://git@github.com/statelyai/xstate.git"
   },
   "scripts": {},
   "bugs": {
-    "url": "https://github.com/davidkpiano/xstate/issues"
+    "url": "https://github.com/statelyai/xstate/issues"
   },
   "peerDependencies": {
-    "xstate": "^4.9.0"
+    "xstate": "^5.0.0-beta.54"
   },
   "devDependencies": {
-    "xstate": "*"
+    "xstate": "5.0.0-beta.54"
   },
   "dependencies": {}
 }

@@ -1,34 +1,41 @@
 import {
-  interpret,
+  ActorRef,
+  AnyActor,
   EventObject,
+  createActor,
   Observer,
-  AnyInterpreter,
-  ActorRef
+  toObserver
 } from 'xstate';
 import { XStateDevInterface } from 'xstate/dev';
-import { toSCXMLEvent, toEventObject, toObserver } from 'xstate/src/utils';
-import { createInspectMachine, InspectMachineEvent } from './inspectMachine';
+import { createInspectMachine, InspectMachineEvent } from './inspectMachine.ts';
+import { stringifyState } from './serialize.ts';
 import type {
   Inspector,
   InspectorOptions,
   InspectReceiver,
   ParsedReceiverEvent,
+  ReceiverCommand,
   ServiceListener,
   WebSocketReceiverOptions,
   WindowReceiverOptions
-} from './types';
+} from './types.ts';
 import {
   getLazy,
   isReceiverEvent,
   parseReceiverEvent,
   stringify
-} from './utils';
+} from './utils.ts';
 
-export const serviceMap = new Map<string, AnyInterpreter>();
+export const serviceMap = new Map<string, AnyActor>();
 
 export function createDevTools(): XStateDevInterface {
-  const services = new Set<AnyInterpreter>();
+  const services = new Set<AnyActor>();
   const serviceListeners = new Set<ServiceListener>();
+
+  const unregister: XStateDevInterface['unregister'] = (service) => {
+    services.delete(service);
+    serviceMap.delete(service.sessionId);
+  };
 
   return {
     services,
@@ -37,15 +44,12 @@ export function createDevTools(): XStateDevInterface {
       serviceMap.set(service.sessionId, service);
       serviceListeners.forEach((listener) => listener(service));
 
-      service.onStop(() => {
-        services.delete(service);
-        serviceMap.delete(service.sessionId);
+      service.subscribe({
+        complete: () => unregister(service),
+        error: () => unregister(service)
       });
     },
-    unregister: (service) => {
-      services.delete(service);
-      serviceMap.delete(service.sessionId);
-    },
+    unregister,
     onRegister: (listener) => {
       serviceListeners.add(listener);
       services.forEach((service) => listener(service));
@@ -59,15 +63,17 @@ export function createDevTools(): XStateDevInterface {
   };
 }
 
-const defaultInspectorOptions: InspectorOptions = {
-  url: 'https://statecharts.io/inspect',
+const defaultInspectorOptions = {
+  url: 'https://stately.ai/viz?inspect',
   iframe: () =>
     document.querySelector<HTMLIFrameElement>('iframe[data-xstate]'),
   devTools: () => {
     const devTools = createDevTools();
-    globalThis.__xstate__ = devTools;
+    (globalThis as any).__xstate__ = devTools;
     return devTools;
-  }
+  },
+  serialize: undefined,
+  targetWindow: undefined
 };
 
 const getFinalOptions = (options?: Partial<InspectorOptions>) => {
@@ -80,12 +86,18 @@ const getFinalOptions = (options?: Partial<InspectorOptions>) => {
   };
 };
 
-export function inspect(
-  options?: Partial<InspectorOptions>
-): Inspector | undefined {
-  const { iframe, url, devTools } = getFinalOptions(options);
+const patchedInterpreters = new Set<AnyActor>();
 
-  if (iframe === null) {
+export function inspect(options?: InspectorOptions): Inspector | undefined {
+  const finalOptions = getFinalOptions(options);
+  const { iframe, url, devTools } = finalOptions;
+
+  if (options?.targetWindow === null) {
+    throw new Error('Received a nullable `targetWindow`.');
+  }
+  let targetWindow: Window | null | undefined = finalOptions.targetWindow;
+
+  if (iframe === null && !targetWindow) {
     console.warn(
       'No suitable <iframe> found to embed the inspector. Please pass an <iframe> element to `inspect(iframe)` or create an <iframe data-xstate></iframe> element.'
     );
@@ -93,16 +105,15 @@ export function inspect(
     return undefined;
   }
 
-  const inspectMachine = createInspectMachine(devTools);
-  const inspectService = interpret(inspectMachine).start();
+  const inspectMachine = createInspectMachine(devTools, options);
+  const inspectService = createActor(inspectMachine).start();
   const listeners = new Set<Observer<any>>();
 
   const sub = inspectService.subscribe((state) => {
     listeners.forEach((listener) => listener.next?.(state));
   });
 
-  let targetWindow: Window | null | undefined;
-  let client: Pick<ActorRef<any>, 'send'>;
+  let client: Pick<ActorRef<any, any>, 'send'>;
 
   const messageHandler = (event: MessageEvent<unknown>) => {
     if (
@@ -137,56 +148,55 @@ export function inspect(
     inspectService.send({ type: 'unload' });
   });
 
+  const stringifyWithSerializer = (value: any) =>
+    stringify(value, options?.serialize);
+
   devTools.onRegister((service) => {
+    const state = service.getSnapshot();
     inspectService.send({
       type: 'service.register',
-      machine: stringify(service.machine),
-      state: stringify(service.state || service.initialState),
+      machine: stringify(service.logic, options?.serialize),
+      state: stringifyState(state, options?.serialize),
       sessionId: service.sessionId,
       id: service.id,
-      parent: (service.parent as AnyInterpreter)?.sessionId
+      parent: (service._parent as AnyActor)?.sessionId
     });
 
-    inspectService.send({
-      type: 'service.event',
-      event: stringify((service.state || service.initialState)._event),
-      sessionId: service.sessionId
-    });
+    if (!patchedInterpreters.has(service)) {
+      patchedInterpreters.add(service);
 
-    // monkey-patch service.send so that we know when an event was sent
-    // to a service *before* it is processed, since other events might occur
-    // while the sent one is being processed, which throws the order off
-    const originalSend = service.send.bind(service);
+      // monkey-patch service.send so that we know when an event was sent
+      // to a service *before* it is processed, since other events might occur
+      // while the sent one is being processed, which throws the order off
+      const originalSend = service.send.bind(service);
 
-    service.send = function inspectSend(event: EventObject, payload?: any) {
-      inspectService.send({
-        type: 'service.event',
-        event: stringify(
-          toSCXMLEvent(toEventObject(event as EventObject, payload))
-        ),
-        sessionId: service.sessionId
-      });
+      service.send = function inspectSend(event: EventObject) {
+        inspectService.send({
+          type: 'service.event',
+          event: stringifyWithSerializer(event),
+          sessionId: service.sessionId
+        });
 
-      return originalSend(event, payload);
-    };
+        return originalSend(event);
+      };
+    }
 
     service.subscribe((state) => {
-      // filter out synchronous notification from within `.start()` call when the `service.state` has not yet been assigned
-      if (state === undefined) {
-        return;
-      }
       inspectService.send({
         type: 'service.state',
-        state: stringify(state),
+        // TODO: investigate usage of structuredClone in browsers if available
+        state: stringifyState(state, options?.serialize),
         sessionId: service.sessionId
       });
     });
 
-    service.onStop(() => {
-      inspectService.send({
-        type: 'service.stop',
-        sessionId: service.sessionId
-      });
+    service.subscribe({
+      complete() {
+        inspectService.send({
+          type: 'service.stop',
+          sessionId: service.sessionId
+        });
+      }
     });
   });
 
@@ -196,11 +206,12 @@ export function inspect(
     });
 
     iframe.setAttribute('src', String(url));
-  } else {
+  } else if (!targetWindow) {
     targetWindow = window.open(String(url), 'xstateinspector');
   }
 
   return {
+    name: '@@xstate/inspector',
     send: (event) => {
       inspectService.send(event);
     },
@@ -208,7 +219,7 @@ export function inspect(
       const observer = toObserver(next, onError, onComplete);
 
       listeners.add(observer);
-      observer.next?.(inspectService.state);
+      observer.next?.(inspectService.getSnapshot());
 
       return {
         unsubscribe: () => {
@@ -217,16 +228,14 @@ export function inspect(
       };
     },
     disconnect: () => {
-      inspectService.send('disconnect');
+      inspectService.send({ type: 'disconnect' });
       window.removeEventListener('message', messageHandler);
       sub.unsubscribe();
     }
-  } as Inspector;
+  };
 }
 
-export function createWindowReceiver(
-  options?: Partial<WindowReceiverOptions>
-): InspectReceiver {
+export function createWindowReceiver(options?: Partial<WindowReceiverOptions>) {
   const {
     window: ownWindow = window,
     targetWindow = window.self === window.top ? window.opener : window.parent
@@ -244,16 +253,21 @@ export function createWindowReceiver(
 
   ownWindow.addEventListener('message', handler);
 
-  const actorRef: InspectReceiver = {
+  const actorRef = {
     name: 'xstate.windowReceiver',
-    send(event) {
+
+    send(event: ReceiverCommand) {
       if (!targetWindow) {
         return;
       }
       targetWindow.postMessage(event, '*');
     },
-    subscribe(next, onError?, onComplete?) {
-      const observer = toObserver(next, onError, onComplete);
+    subscribe(
+      next: (value: ParsedReceiverEvent) => void,
+      error?: (error: any) => void,
+      complete?: () => void
+    ) {
+      const observer = toObserver(next, error, complete);
 
       observers.add(observer);
 
@@ -280,21 +294,23 @@ export function createWindowReceiver(
   return actorRef;
 }
 
-export function createWebSocketReceiver(
-  options: WebSocketReceiverOptions
-): InspectReceiver {
+export function createWebSocketReceiver(options: WebSocketReceiverOptions) {
   const { protocol = 'ws' } = options;
   const ws = new WebSocket(`${protocol}://${options.server}`);
   const observers = new Set<Observer<ParsedReceiverEvent>>();
   let latestEvent: ParsedReceiverEvent;
 
-  const actorRef: InspectReceiver = {
+  const actorRef = {
     name: 'xstate.webSocketReceiver',
-    send(event) {
-      ws.send(JSON.stringify(event));
+    send(event: ReceiverCommand) {
+      ws.send(stringify(event, options.serialize));
     },
-    subscribe(next, onError?, onComplete?) {
-      const observer = toObserver(next, onError, onComplete);
+    subscribe(
+      next: (value: ParsedReceiverEvent) => void,
+      error?: (error: any) => void,
+      complete?: () => void
+    ) {
+      const observer = toObserver(next, error, complete);
 
       observers.add(observer);
 
@@ -323,7 +339,7 @@ export function createWebSocketReceiver(
     try {
       const eventObject = JSON.parse(event.data);
 
-      if (isReceiverEvent(latestEvent)) {
+      if (isReceiverEvent(eventObject)) {
         latestEvent = parseReceiverEvent(eventObject);
         observers.forEach((observer) => {
           observer.next?.(latestEvent);

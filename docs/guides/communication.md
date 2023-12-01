@@ -1,5 +1,9 @@
 # Invoking Services
 
+:::tip Check out our new docs!
+🆕 Our [section on actors in XState](https://stately.ai/docs/actors) has explainers and examples for promises, callbacks, observables, actions, and actors.
+:::
+
 [:rocket: Quick Reference](#quick-reference)
 
 Expressing the entire app's behavior in a single machine can quickly become complex and unwieldy. It is natural (and encouraged!) to use multiple machines that communicate with each other to express complex logic instead. This closely resembles the [Actor model](https://www.brianstorti.com/the-actor-model/), where each machine instance is considered an "actor" that can send and receive events (messages) to and from other "actors" (such as Promises or other machines) and react to them.
@@ -31,7 +35,7 @@ An invocation is defined in a state node's configuration with the `invoke` prope
   - the invoked observable completes
 - `onError` - (optional) the transition to be taken when the invoked service encounters an execution error.
 - `autoForward` - (optional) `true` if all events sent to this machine should also be sent (or _forwarded_) to the invoked child (`false` by default)
-  - ⚠️ Avoid setting `autoForward` to `true`, as blindly forwarding all events may lead to unexpected behavior and/or infinite loops. Always prefer to explicitly send events, and/or use the `forward(...)` action creator to directly forward an event to an invoked child. (works currently for machines only! ⚠️)
+  - ⚠️ Avoid setting `autoForward` to `true`, as blindly forwarding all events may lead to unexpected behavior and/or infinite loops. Always prefer to explicitly send events, and/or use the `forwardTo(...)` action creator to directly forward an event to a service.
 - `data` - (optional, used only when invoking machines) an object that maps properties of the child machine's [context](./context.md) to a function that returns the corresponding value from the parent machine's `context`.
 
 ::: warning
@@ -114,11 +118,11 @@ const userMachine = createMachine({
 });
 ```
 
-The resolved data is placed into a `'done.invoke.<id>'` event, under the `data` property, e.g.:
+The resolved data is placed into a `'xstate.done.actor.<id>'` event, under the `data` property, e.g.:
 
 ```js
 {
-  type: 'done.invoke.getUser',
+  type: 'xstate.done.actor.getUser',
   data: {
     name: 'David',
     location: 'Florida'
@@ -128,18 +132,19 @@ The resolved data is placed into a `'done.invoke.<id>'` event, under the `data` 
 
 ### Promise Rejection
 
-If a Promise rejects, the `onError` transition will be taken with a `{ type: 'error.platform' }` event. The error data is available on the event's `data` property:
+If a Promise rejects, the `onError` transition will be taken with a `{ type: 'xstate.error.actor' }` event. The error data is available on the event's `data` property:
 
 ```js
-const search = (context, event) => new Promise((resolve, reject) => {
-  if (!event.query.length) {
-    return reject('No query specified');
-    // or:
-    // throw new Error('No query specified');
-  }
+const search = (context, event) =>
+  new Promise((resolve, reject) => {
+    if (!event.query.length) {
+      return reject('No query specified');
+      // or:
+      // throw new Error('No query specified');
+    }
 
-  return resolve(getSearchResults(event.query));
-});
+    return resolve(getSearchResults(event.query));
+  });
 
 // ...
 const searchMachine = createMachine({
@@ -147,7 +152,7 @@ const searchMachine = createMachine({
   initial: 'idle',
   context: {
     results: undefined,
-    errorMessage: undefined,
+    errorMessage: undefined
   },
   states: {
     idle: {
@@ -157,14 +162,14 @@ const searchMachine = createMachine({
     },
     searching: {
       invoke: {
-        id: 'search'
+        id: 'search',
         src: search,
         onError: {
           target: 'failure',
           actions: assign({
             errorMessage: (context, event) => {
               // event is:
-              // { type: 'error.platform', data: 'No query specified' }
+              // { type: 'xstate.error.actor', data: 'No query specified' }
               return event.data;
             }
           })
@@ -250,10 +255,9 @@ const pingPongMachine = createMachine({
     }
   }
 });
-
-interpret(pingPongMachine)
-  .onDone(() => done())
-  .start();
+const actor = interpret(pingPongMachine);
+actor.subscribe({ complete: () => done() });
+actor.start();
 ```
 
 ## Invoking Observables <Badge text="4.6"/>
@@ -429,7 +433,7 @@ The `data` _replaces_ the default `context` defined on the machine; it is not me
 
 ### Done Data
 
-When a child machine reaches its top-level [final state](./final.md), it can send data in the "done" event (e.g., `{ type: 'done.invoke.someId', data: ... }`). This "done data" is specified on the final state's `data` property:
+When a child machine reaches its top-level [final state](./final.md), it can send data in the "done" event (e.g., `{ type: 'xstate.done.actor.someId', data: ... }`). This "done data" is specified on the final state's `data` property:
 
 ```js
 const secretMachine = createMachine({
@@ -446,9 +450,9 @@ const secretMachine = createMachine({
     },
     reveal: {
       type: 'final',
-      data: {
-        secret: (context, event) => context.secret
-      }
+      data: (context, event) => ({
+        secret: context.secret
+      })
     }
   }
 });
@@ -469,7 +473,7 @@ const parentMachine = createMachine({
           actions: assign({
             revealedSecret: (context, event) => {
               // event is:
-              // { type: 'done.invoke.secret', data: { secret: '42' } }
+              // { type: 'xstate.done.actor.secret', data: { secret: '42' } }
               return event.data.secret;
             }
           })
@@ -539,9 +543,12 @@ const pongMachine = createMachine({
       on: {
         PING: {
           // Sends 'PONG' event to parent machine
-          actions: sendParent('PONG', {
-            delay: 1000
-          })
+          actions: sendParent(
+            { type: 'PONG' },
+            {
+              delay: 1000
+            }
+          )
         }
       }
     }
@@ -636,24 +643,26 @@ The invocation sources (services) can be configured similar to how actions, guar
 ```js
 const fetchUser = // (same as the above example)
 
-const userMachine = createMachine({
-  id: 'user',
-  // ...
-  states: {
+const userMachine = createMachine(
+  {
+    id: 'user',
     // ...
-    loading: {
-      invoke: {
-        src: 'getUser',
-        // ...
-      }
-    },
-    // ...
-  }
-}, {
+    states: {
+      // ...
+      loading: {
+        invoke: {
+          src: 'getUser',
+          // ...
+        }
+      },
+      // ...
+    }
+  },
+  {
   services: {
     getUser: (context, event) => fetchUser(context.user.id)
   }
-});
+);
 ```
 
 The invoke `src` can also be specified as an object <Badge text="4.12" /> that describes the invoke source with its `type` and other related metadata. This can be read from the `services` option in the `meta.src` argument:
@@ -876,33 +885,3 @@ const someMachine = createMachine({ /* ... */ });
 }
 // ...
 ```
-
-## SCXML
-
-The `invoke` property is synonymous to the SCXML `<invoke>` element:
-
-```js
-// XState
-{
-  loading: {
-    invoke: {
-      src: 'someSource',
-      id: 'someID',
-      autoForward: true, // currently for machines only!
-      onDone: 'success',
-      onError: 'failure'
-    }
-  }
-}
-```
-
-```xml
-<!-- SCXML -->
-<state id="loading">
-  <invoke id="someID" src="someSource" autoforward />
-  <transition event="done.invoke.someID" target="success" />
-  <transition event="error.platform" cond="_event.src === 'someID'" target="failure" />
-</state>
-```
-
-- [https://www.w3.org/TR/scxml/#invoke](https://www.w3.org/TR/scxml/#invoke) - the definition of `<invoke>`

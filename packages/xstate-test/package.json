@@ -1,6 +1,6 @@
 {
   "name": "@xstate/test",
-  "version": "0.4.2",
+  "version": "1.0.0-beta.4",
   "description": "XState test utilities",
   "keywords": [
     "state",
@@ -14,13 +14,24 @@
     "testing"
   ],
   "author": "David Khourshid <davidkpiano@gmail.com>",
-  "homepage": "https://github.com/davidkpiano/xstate/tree/main/packages/xstate-test#readme",
+  "homepage": "https://github.com/statelyai/xstate/tree/main/packages/xstate-test#readme",
   "license": "MIT",
   "main": "dist/xstate-test.cjs.js",
   "module": "dist/xstate-test.esm.js",
   "browser": {
-    "./dist/xstate-test.cjs.js": "./dist/xstate-test.browser.cjs.js",
     "./dist/xstate-test.esm.js": "./dist/xstate-test.browser.esm.js"
+  },
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/xstate-test.cjs.mjs",
+        "default": "./dist/xstate-test.cjs.js"
+      },
+      "module": "./dist/xstate-test.esm.js",
+      "import": "./dist/xstate-test.cjs.mjs",
+      "default": "./dist/xstate-test.cjs.js"
+    },
+    "./package.json": "./package.json"
   },
   "sideEffects": false,
   "files": [
@@ -28,21 +39,20 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/davidkpiano/xstate.git"
+    "url": "git+ssh://git@github.com/statelyai/xstate.git"
   },
   "scripts": {},
   "bugs": {
-    "url": "https://github.com/davidkpiano/xstate/issues"
+    "url": "https://github.com/statelyai/xstate/issues"
   },
   "peerDependencies": {
-    "xstate": "^4.9.0"
+    "xstate": "^5.0.0-beta.54"
   },
   "devDependencies": {
     "strip-ansi": "^5.2.0",
-    "xstate": "*"
+    "xstate": "5.0.0-beta.54"
   },
   "dependencies": {
-    "@xstate/graph": "^1.1.0",
-    "chalk": "^2.4.2"
+    "@xstate/graph": "2.0.0-beta.5"
   }
 }

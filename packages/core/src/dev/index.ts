@@ -1,25 +1,27 @@
-import { AnyInterpreter, DevToolsAdapter } from '../types';
+import isDevelopment from '#is-development';
+import { AnyActor, DevToolsAdapter } from '../types.ts';
 
 interface DevInterface {
-  services: Set<AnyInterpreter>;
-  register(service: AnyInterpreter): void;
+  services: Set<AnyActor>;
+  register(service: AnyActor): void;
   onRegister(listener: ServiceListener): void;
 }
-type ServiceListener = (service: AnyInterpreter) => void;
+type ServiceListener = (service: AnyActor) => void;
 
 export interface XStateDevInterface {
-  register: (service: AnyInterpreter) => void;
-  unregister: (service: AnyInterpreter) => void;
-  onRegister: (
-    listener: ServiceListener
-  ) => {
+  register: (service: AnyActor) => void;
+  unregister: (service: AnyActor) => void;
+  onRegister: (listener: ServiceListener) => {
     unsubscribe: () => void;
   };
-  services: Set<AnyInterpreter>;
+  services: Set<AnyActor>;
 }
 
 // From https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/globalThis
-export function getGlobal(): any {
+export function getGlobal(): typeof globalThis | undefined {
+  if (typeof globalThis !== 'undefined') {
+    return globalThis;
+  }
   if (typeof self !== 'undefined') {
     return self;
   }
@@ -29,20 +31,23 @@ export function getGlobal(): any {
   if (typeof global !== 'undefined') {
     return global;
   }
-
-  return undefined;
+  if (isDevelopment) {
+    console.warn(
+      'XState could not find a global object in this environment. Please let the maintainers know and raise an issue here: https://github.com/statelyai/xstate/issues'
+    );
+  }
 }
 
 function getDevTools(): DevInterface | undefined {
   const w = getGlobal();
-  if (!!w.__xstate__) {
-    return w.__xstate__;
+  if (!!(w as any).__xstate__) {
+    return (w as any).__xstate__;
   }
 
   return undefined;
 }
 
-export function registerService(service: AnyInterpreter) {
+export function registerService(service: AnyActor) {
   if (typeof window === 'undefined') {
     return;
   }

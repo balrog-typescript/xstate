@@ -1,4 +1,4 @@
-import { interpret, DevToolsAdapter, createMachine } from '../src';
+import { createActor, DevToolsAdapter, createMachine } from '../src/index.ts';
 
 describe('devTools', () => {
   it('should register services with a custom devTools adapter', (done) => {
@@ -22,11 +22,11 @@ describe('devTools', () => {
       }
     });
 
-    const service = interpret(machine, {
+    const service = createActor(machine, {
       devTools: customAdapter
     });
 
     service.start();
-    service.send('TOGGLE');
+    service.send({ type: 'TOGGLE' });
   });
 });

@@ -2,29 +2,16 @@
 
 You can install XState from NPM or Yarn, or you can embed the `<script>` directly from a CDN.
 
+:::tip Check out our new docs!
+🆕 Find more about [installing XState](https://stately.ai/docs/installation) in our new docs.
+:::
+
 ## Package Manager
 
 ```bash
 npm install xstate@latest --save
 # or:
 yarn add xstate@latest --save
-```
-
-## Exports
-
-The common exports are as follows:
-
-```js {2-9}
-import {
-  createMachine,
-  State,
-  actions,
-  assign,
-  send,
-  sendParent,
-  interpret,
-  spawn
-} from 'xstate';
 ```
 
 ## CDN

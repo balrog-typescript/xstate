@@ -1,11 +1,10 @@
 # Machines
 
-A **state machine** is a finite set of [states](./statenodes.md) that can transition to each other deterministically due to events. A **statechart** is an extension of state machines; mainly, they can have:
+A state machine is a finite set of states that can transition to each other deterministically due to events. To learn more, read our [introduction to statecharts](./introduction-to-state-machines-and-statecharts/index.md).
 
-- [Hierarchical](./hierarchical.md) (or nested) states
-- [Orthogonal](./parallel.md) (or parallel) states
-- [History](./history.md) states
-- And more, as described in [Statecharts: a Visual Formalism for Complex Systems](https://www.sciencedirect.com/science/article/pii/0167642387900359/pdf).
+:::tip Check out our new docs!
+🆕 Find more about [creating machines using XState](https://stately.ai/docs/machines#creating-a-state-machine) in our new docs.
+:::
 
 ## Configuration
 
@@ -48,7 +47,7 @@ The machine config is the same as the [state node config](./statenodes.md), with
 
 ## Options
 
-Implementations for [actions](./actions.md), [activities](./activities.md), [delays](./delays.md), [guards](./guards.md), and [services](./communication.md) can be referenced in the machine config as a string, and then specified as an object in the 2nd argument to `createMachine()`:
+Implementations for [actions](./actions.md), [delays](./delays.md), [guards](./guards.md), and [services](./communication.md) can be referenced in the machine config as a string, and then specified as an object in the 2nd argument to `createMachine()`:
 
 ```js
 const lightMachine = createMachine(
@@ -69,9 +68,6 @@ const lightMachine = createMachine(
         alert('Green!');
       }
     },
-    activities: {
-      /* ... */
-    },
     delays: {
       /* ... */
     },
@@ -88,10 +84,10 @@ const lightMachine = createMachine(
 This object has 5 optional properties:
 
 - `actions` - the mapping of action names to their implementation
-- `activities` - the mapping of activity names to their implementation
 - `delays` - the mapping of delay names to their implementation
 - `guards` - the mapping of transition guard (`cond`) names to their implementation
 - `services` - the mapping of invoked service (`src`) names to their implementation
+- `activities` (deprecated) - the mapping of activity names to their implementation
 
 ## Extending Machines
 

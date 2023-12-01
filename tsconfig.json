@@ -1,20 +1,17 @@
 {
   "compilerOptions": {
-    "allowSyntheticDefaultImports": true,
     "target": "esnext",
     "isolatedModules": true,
-    "moduleResolution": "node",
+    "moduleResolution": "node16",
+    "module": "node16",
+    "allowImportingTsExtensions": true,
     "noEmit": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "strictNullChecks": true,
-    "downlevelIteration": true,
-    "experimentalDecorators": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "jsx": "react",
-    "lib": ["es6", "dom"],
-    "strictPropertyInitialization": true
+    "jsx": "react-jsx",
+    "lib": ["es2019", "dom"],
+    "strict": true,
+    "stripInternal": true
   },
-  "exclude": ["examples"]
+  "exclude": ["examples", "templates"]
 }

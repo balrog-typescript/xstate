@@ -1,59 +1,45 @@
+import isDevelopment from '#is-development';
+import { Mailbox } from './Mailbox.ts';
 import {
-  Event,
-  EventObject,
-  CancelActionObject,
-  ActionObject,
-  SpecialTargets,
-  ActionTypes,
-  SendActionObject,
-  StateValue,
-  InterpreterOptions,
-  DoneEvent,
-  Subscription,
-  MachineImplementations,
-  ActionFunctionMap,
-  SCXML,
-  Observer,
-  Typestate,
-  InvokeActionObject,
-  AnyEventObject,
+  createDoneActorEvent,
+  createErrorActorEvent,
+  createInitEvent
+} from './eventUtils.ts';
+import { XSTATE_STOP } from './constants.ts';
+import { devToolsAdapter } from './dev/index.ts';
+import { reportUnhandledError } from './reportUnhandledError.ts';
+import { symbolObservable } from './symbolObservable.ts';
+import { createSystem } from './system.ts';
+import {
+  AreAllImplementationsAssumedToBeProvided,
+  MissingImplementationsError
+} from './typegenTypes.ts';
+import type {
+  ActorScope,
+  ActorSystem,
+  AnyActorLogic,
+  AnyStateMachine,
+  EventFromLogic,
+  SnapshotFrom,
+  AnyActorRef,
+  DoneActorEvent,
+  Snapshot
+} from './types.ts';
+import {
   ActorRef,
-  SCXMLErrorEvent
-} from './types';
-import { State, bindActionToState, isState } from './State';
-import * as actionTypes from './actionTypes';
-import { doneInvoke, error, getActionFunction, initEvent } from './actions';
-import { IS_PRODUCTION } from './environment';
-import {
-  mapContext,
-  warn,
-  keys,
-  isArray,
-  isFunction,
-  toSCXMLEvent,
-  symbolObservable,
-  isSCXMLErrorEvent,
-  toEventObject
-} from './utils';
-import { Scheduler } from './scheduler';
-import { isActorRef } from './actor';
-import { isInFinalState } from './stateUtils';
-import { registry } from './registry';
-import { StateMachine } from './StateMachine';
-import { devToolsAdapter } from './dev';
-import { CapturedState } from './capturedState';
-import {
-  MachineContext,
-  PayloadSender,
-  StopActionObject,
-  Subscribable
-} from '.';
+  EventObject,
+  InteropSubscribable,
+  ActorOptions,
+  Observer,
+  Subscription
+} from './types.ts';
+import { toObserver } from './utils.ts';
 
-export type StateListener<
-  TContext extends MachineContext,
-  TEvent extends EventObject,
-  TTypestate extends Typestate<TContext> = { value: any; context: TContext }
-> = (state: State<TContext, TEvent, TTypestate>, event: TEvent) => void;
+export const $$ACTOR_TYPE = 1;
+
+export type SnapshotListener<TLogic extends AnyActorLogic> = (
+  snapshot: SnapshotFrom<TLogic>
+) => void;
 
 export type EventListener<TEvent extends EventObject = EventObject> = (
   event: TEvent
@@ -67,14 +53,14 @@ export interface Clock {
   clearTimeout(id: any): void;
 }
 
-export enum InterpreterStatus {
-  NotStarted,
-  Running,
-  Stopped
+// those values are currently used by @xstate/react directly so it's important to keep the assigned values in sync
+export enum ProcessingStatus {
+  NotStarted = 0,
+  Running = 1,
+  Stopped = 2
 }
 
-const defaultOptions: InterpreterOptions = ((global) => ({
-  deferEvents: true,
+const defaultOptions = {
   clock: {
     setTimeout: (fn, ms) => {
       return setTimeout(fn, ms);
@@ -82,750 +68,601 @@ const defaultOptions: InterpreterOptions = ((global) => ({
     clearTimeout: (id) => {
       return clearTimeout(id);
     }
-  },
-  logger: global.console.log.bind(console),
+  } as Clock,
+  logger: console.log.bind(console),
   devTools: false
-}))(typeof window === 'undefined' ? global : window);
+};
 
-declare global {
-  interface SymbolConstructor {
-    readonly observable: symbol;
-  }
-}
-
-export class Interpreter<
-  TContext extends MachineContext,
-  TEvent extends EventObject = EventObject,
-  TTypestate extends Typestate<TContext> = { value: any; context: TContext }
-> {
+/**
+ * An Actor is a running process that can receive events, send events and change its behavior based on the events it receives, which can cause effects outside of the actor. When you run a state machine, it becomes an actor.
+ */
+export class Actor<TLogic extends AnyActorLogic>
+  implements ActorRef<SnapshotFrom<TLogic>, EventFromLogic<TLogic>>
+{
   /**
-   * The current state of the interpreted machine.
+   * The current internal state of the actor.
    */
-  private _state?: State<TContext, TEvent, TTypestate>;
-  private _initialState?: State<TContext, TEvent, TTypestate>;
+  private _snapshot!: SnapshotFrom<TLogic>;
   /**
    * The clock that is responsible for setting and clearing timeouts, such as delayed events and transitions.
    */
   public clock: Clock;
-  public options: Readonly<InterpreterOptions>;
+  public options: Readonly<ActorOptions<TLogic>>;
 
-  public id: string;
-  private scheduler: Scheduler = new Scheduler();
-  private delayedEventsMap: Record<string, number> = {};
-  private listeners: Set<
-    StateListener<TContext, TEvent, TTypestate>
-  > = new Set();
-  private stopListeners: Set<Listener> = new Set();
-  private errorListeners: Set<ErrorListener> = new Set();
-  private doneListeners: Set<EventListener> = new Set();
-  private logger: (...args: any[]) => void;
   /**
-   * Whether the service is started.
+   * The unique identifier for this actor relative to its parent.
    */
-  public status: InterpreterStatus = InterpreterStatus.NotStarted;
+  public id: string;
+
+  private mailbox: Mailbox<EventFromLogic<TLogic>> = new Mailbox(
+    this._process.bind(this)
+  );
+
+  private delayedEventsMap: Record<string, unknown> = {};
+
+  private observers: Set<Observer<SnapshotFrom<TLogic>>> = new Set();
+  private logger: (...args: any[]) => void;
+
+  /** @internal */
+  public _processingStatus: ProcessingStatus = ProcessingStatus.NotStarted;
 
   // Actor Ref
-  public parent?: ActorRef<any>;
-  public name: string;
-  public ref: ActorRef<TEvent>;
+  public _parent?: ActorRef<any, any>;
+  public _syncSnapshot?: boolean;
+  public ref: ActorRef<SnapshotFrom<TLogic>, EventFromLogic<TLogic>>;
+  // TODO: add typings for system
+  private _actorScope: ActorScope<
+    SnapshotFrom<TLogic>,
+    EventFromLogic<TLogic>,
+    any
+  >;
+
+  private _systemId: string | undefined;
 
   /**
    * The globally unique process ID for this invocation.
    */
   public sessionId: string;
-  public children: Map<string | number, ActorRef<any>> = new Map();
-  private forwardTo: Set<string> = new Set();
 
   /**
-   * Creates a new Interpreter instance (i.e., service) for the given machine with the provided options, if any.
+   * The system to which this actor belongs.
+   */
+  public system: ActorSystem<any>;
+  private _doneEvent?: DoneActorEvent;
+
+  public src: string | AnyActorLogic;
+
+  /**
+   * Creates a new actor instance for the given logic with the provided options, if any.
    *
-   * @param machine The machine to be interpreted
-   * @param options Interpreter options
+   * @param logic The logic to create an actor from
+   * @param options Actor options
    */
   constructor(
-    public machine: StateMachine<TContext, TEvent, TTypestate>,
-    options?: Partial<InterpreterOptions>
+    public logic: TLogic,
+    options?: ActorOptions<TLogic>
   ) {
-    const resolvedOptions: InterpreterOptions = {
+    const resolvedOptions = {
       ...defaultOptions,
       ...options
-    };
+    } as ActorOptions<TLogic> & typeof defaultOptions;
 
-    const { clock, logger, parent, id } = resolvedOptions;
+    const { clock, logger, parent, syncSnapshot, id, systemId, inspect } =
+      resolvedOptions;
 
-    const resolvedId = id !== undefined ? id : machine.key;
+    this.system = parent?.system ?? createSystem(this);
 
-    this.name = this.id = resolvedId;
+    if (inspect && !parent) {
+      // Always inspect at the system-level
+      this.system.inspect(toObserver(inspect));
+    }
+
+    this.sessionId = this.system._bookId();
+    this.id = id ?? this.sessionId;
     this.logger = logger;
     this.clock = clock;
-    this.parent = parent;
-
+    this._parent = parent;
+    this._syncSnapshot = syncSnapshot;
     this.options = resolvedOptions;
+    this.src = resolvedOptions.src ?? logic;
+    this.ref = this;
+    this._actorScope = {
+      self: this,
+      id: this.id,
+      sessionId: this.sessionId,
+      logger: this.logger,
+      defer: (fn) => {
+        this._deferred.push(fn);
+      },
+      system: this.system,
+      stopChild: (child) => {
+        if (child._parent !== this) {
+          throw new Error(
+            `Cannot stop child actor ${child.id} of ${this.id} because it is not a child`
+          );
+        }
+        (child as any)._stop();
+      }
+    };
 
-    this.scheduler = new Scheduler({
-      deferEvents: this.options.deferEvents
+    // Ensure that the send method is bound to this Actor instance
+    // if destructured
+    this.send = this.send.bind(this);
+    this.system._sendInspectionEvent({
+      type: '@xstate.actor',
+      actorRef: this
     });
 
-    this.ref = this;
+    if (systemId) {
+      this._systemId = systemId;
+      this.system._set(systemId, this);
+    }
 
-    this.sessionId = this.ref.name;
-  }
+    this._initState(options?.snapshot ?? options?.state);
 
-  public get initialized() {
-    return this.status === InterpreterStatus.Running;
-  }
-
-  public get initialState(): State<TContext, TEvent, TTypestate> {
-    try {
-      CapturedState.current = {
-        actorRef: this.ref,
-        spawns: []
-      };
-      const initialState =
-        this._initialState ||
-        ((this._initialState = this.machine.getInitialState()),
-        this._initialState);
-
-      initialState.actions.push(...CapturedState.current.spawns);
-      return initialState;
-    } finally {
-      CapturedState.current = {
-        actorRef: undefined,
-        spawns: []
-      };
+    if (systemId && (this._snapshot as any).status !== 'active') {
+      this.system._unregister(this);
     }
   }
 
-  public get state(): State<TContext, TEvent, TTypestate> {
-    return this._state!;
+  private _initState(persistedState?: Snapshot<unknown>) {
+    try {
+      this._snapshot = persistedState
+        ? this.logic.restoreSnapshot
+          ? this.logic.restoreSnapshot(persistedState, this._actorScope)
+          : persistedState
+        : this.logic.getInitialState(this._actorScope, this.options?.input);
+    } catch (err) {
+      // if we get here then it means that we assign a value to this._snapshot that is not of the correct type
+      // we can't get the true `TSnapshot & { status: 'error'; }`, it's impossible
+      // so right now this is a lie of sorts
+      this._snapshot = {
+        status: 'error',
+        output: undefined,
+        error: err
+      } as any;
+    }
+  }
+
+  // array of functions to defer
+  private _deferred: Array<() => void> = [];
+
+  private update(snapshot: SnapshotFrom<TLogic>, event: EventObject): void {
+    // Update state
+    this._snapshot = snapshot;
+
+    // Execute deferred effects
+    let deferredFn: (typeof this._deferred)[number] | undefined;
+
+    while ((deferredFn = this._deferred.shift())) {
+      try {
+        deferredFn();
+      } catch (err) {
+        // this error can only be caught when executing *initial* actions
+        // it's the only time when we call actions provided by the user through those deferreds
+        // when the actor is already running we always execute them synchronously while transitioning
+        // no "builtin deferred" should actually throw an error since they are either safe
+        // or the control flow is passed through the mailbox and errors should be caught by the `_process` used by the mailbox
+        this._deferred.length = 0;
+        this._snapshot = {
+          ...(snapshot as any),
+          status: 'error',
+          error: err
+        };
+      }
+    }
+
+    switch ((this._snapshot as any).status) {
+      case 'active':
+        for (const observer of this.observers) {
+          try {
+            observer.next?.(snapshot);
+          } catch (err) {
+            reportUnhandledError(err);
+          }
+        }
+        break;
+      case 'done':
+        // next observers are meant to be notified about done snapshots
+        // this can be seen as something that is different from how observable work
+        // but with observables `complete` callback is called without any arguments
+        // it's more ergonomic for XState to treat a done snapshot as a "next" value
+        // and the completion event as something that is separate,
+        // something that merely follows emitting that done snapshot
+        for (const observer of this.observers) {
+          try {
+            observer.next?.(snapshot);
+          } catch (err) {
+            reportUnhandledError(err);
+          }
+        }
+
+        this._stopProcedure();
+        this._complete();
+        this._doneEvent = createDoneActorEvent(
+          this.id,
+          (this._snapshot as any).output
+        );
+        if (this._parent) {
+          this.system._relay(this, this._parent, this._doneEvent);
+        }
+
+        break;
+      case 'error':
+        this._error((this._snapshot as any).error);
+        break;
+    }
+    this.system._sendInspectionEvent({
+      type: '@xstate.snapshot',
+      actorRef: this,
+      event,
+      snapshot
+    });
   }
 
   /**
-   * Executes the actions of the given state, with that state's `context` and `event`.
+   * Subscribe an observer to an actor’s snapshot values.
    *
-   * @param state The state whose actions will be executed
-   * @param actionsConfig The action implementations to use
-   */
-  public execute(
-    state: State<TContext, TEvent, TTypestate>,
-    actionsConfig?: MachineImplementations<TContext, TEvent>['actions']
-  ): void {
-    for (const action of state.actions) {
-      this.exec(action, state, actionsConfig);
-    }
-  }
-
-  private update(
-    state: State<TContext, TEvent, any>,
-    _event: SCXML.Event<TEvent>
-  ): void {
-    // Attach session ID to state
-    state._sessionid = this.sessionId;
-
-    // Update state
-    this._state = state;
-
-    // Execute actions
-    this.execute(this.state);
-
-    for (const listener of this.listeners) {
-      listener(state, state.event);
-    }
-
-    const isDone = isInFinalState(state.configuration || [], this.machine.root);
-
-    if (this.state.configuration && isDone) {
-      // get final child state node
-      const finalChildStateNode = state.configuration.find(
-        (stateNode) =>
-          stateNode.type === 'final' && stateNode.parent === this.machine.root
-      );
-
-      const doneData =
-        finalChildStateNode && finalChildStateNode.doneData
-          ? mapContext(finalChildStateNode.doneData, state.context, _event)
-          : undefined;
-
-      for (const listener of this.doneListeners) {
-        listener(
-          toSCXMLEvent(doneInvoke(this.name, doneData), { invokeid: this.name })
-        );
-      }
-      this.stop();
-    }
-  }
-  /*
-   * Adds a listener that is notified whenever a state transition happens. The listener is called with
-   * the next state and the event object that caused the state transition.
+   * @remarks
+   * The observer will receive the actor’s snapshot value when it is emitted. The observer can be:
+   * - A plain function that receives the latest snapshot, or
+   * - An observer object whose `.next(snapshot)` method receives the latest snapshot
    *
-   * @param listener The state listener
+   * @example
+   * ```ts
+   * // Observer as a plain function
+   * const subscription = actor.subscribe((snapshot) => {
+   *   console.log(snapshot);
+   * });
+   * ```
+   *
+   * @example
+   * ```ts
+   * // Observer as an object
+   * const subscription = actor.subscribe({
+   *   next(snapshot) {
+   *     console.log(snapshot);
+   *   },
+   *   error(err) {
+   *     // ...
+   *   },
+   *   complete() {
+   *     // ...
+   *   },
+   * });
+   * ```
+   *
+   * The return value of `actor.subscribe(observer)` is a subscription object that has an `.unsubscribe()` method. You can call `subscription.unsubscribe()` to unsubscribe the observer:
+   *
+   * @example
+   * ```ts
+   * const subscription = actor.subscribe((snapshot) => {
+   *   // ...
+   * });
+   *
+   * // Unsubscribe the observer
+   * subscription.unsubscribe();
+   * ```
+   *
+   * When the actor is stopped, all of its observers will automatically be unsubscribed.
+   *
+   * @param observer - Either a plain function that receives the latest snapshot, or an observer object whose `.next(snapshot)` method receives the latest snapshot
    */
-  public onTransition(
-    listener: StateListener<TContext, TEvent, TTypestate>
-  ): this {
-    this.listeners.add(listener);
-
-    // Send current state to listener
-    if (this.status === InterpreterStatus.Running) {
-      listener(this.state, this.state.event);
-    }
-
-    return this;
-  }
-
+  public subscribe(observer: Observer<SnapshotFrom<TLogic>>): Subscription;
   public subscribe(
-    nextListener?: (state: State<TContext, TEvent, TTypestate>) => void,
+    nextListener?: (snapshot: SnapshotFrom<TLogic>) => void,
     errorListener?: (error: any) => void,
     completeListener?: () => void
   ): Subscription;
   public subscribe(
-    observer: Observer<State<TContext, TEvent, TTypestate>>
-  ): Subscription;
-  public subscribe(
     nextListenerOrObserver?:
-      | ((state: State<TContext, TEvent, TTypestate>) => void)
-      | Observer<State<TContext, TEvent, TTypestate>>,
-    errorListener?: (error: Error) => void,
+      | ((snapshot: SnapshotFrom<TLogic>) => void)
+      | Observer<SnapshotFrom<TLogic>>,
+    errorListener?: (error: any) => void,
     completeListener?: () => void
   ): Subscription {
-    if (!nextListenerOrObserver) {
-      return { unsubscribe: () => void 0 };
-    }
+    const observer = toObserver(
+      nextListenerOrObserver,
+      errorListener,
+      completeListener
+    );
 
-    let listener: (state: State<TContext, TEvent, TTypestate>) => void;
-    let resolvedCompleteListener = completeListener;
-
-    if (typeof nextListenerOrObserver === 'function') {
-      listener = nextListenerOrObserver;
+    if (this._processingStatus !== ProcessingStatus.Stopped) {
+      this.observers.add(observer);
     } else {
-      listener = nextListenerOrObserver.next?.bind(nextListenerOrObserver);
-      resolvedCompleteListener = nextListenerOrObserver.complete?.bind(
-        nextListenerOrObserver
-      );
-    }
-
-    if (listener) {
-      this.listeners.add(listener);
-    }
-
-    if (errorListener) {
-      this.onError(errorListener);
-    }
-
-    // Send current state to listener
-    if (this.status === InterpreterStatus.Running) {
-      listener(this.state);
-    }
-
-    if (resolvedCompleteListener) {
-      this.onDone(resolvedCompleteListener);
+      try {
+        observer.complete?.();
+      } catch (err) {
+        reportUnhandledError(err);
+      }
     }
 
     return {
       unsubscribe: () => {
-        listener && this.off(listener);
-        resolvedCompleteListener && this.off(resolvedCompleteListener);
-        errorListener && this.off(errorListener);
+        this.observers.delete(observer);
       }
     };
   }
 
   /**
-   * Adds a listener that is notified when the machine is stopped.
-   *
-   * @param listener The listener
+   * Starts the Actor from the initial state
    */
-  public onStop(listener: Listener): this {
-    this.stopListeners.add(listener);
-    return this;
-  }
-
-  /**
-   * Adds an error listener that is notified with an `Error` whenever an
-   * error occurs during execution.
-   *
-   * @param listener The error listener
-   */
-  public onError(listener: ErrorListener): this {
-    this.errorListeners.add(listener);
-    return this;
-  }
-
-  private handleErrorEvent(errorEvent: SCXMLErrorEvent): void {
-    if (this.errorListeners.size > 0) {
-      this.errorListeners.forEach((listener) => {
-        listener(errorEvent.data.data);
-      });
-    } else {
-      this.stop();
-      throw errorEvent.data.data;
-    }
-  }
-
-  /**
-   * Adds a state listener that is notified when the statechart has reached its final state.
-   * @param listener The state listener
-   */
-  public onDone(
-    listener: EventListener<DoneEvent>
-  ): Interpreter<TContext, TEvent, TTypestate> {
-    this.doneListeners.add(listener);
-    return this;
-  }
-
-  /**
-   * Removes a listener.
-   * @param listener The listener to remove
-   */
-  public off(
-    listener: (...args: any[]) => void
-  ): Interpreter<TContext, TEvent, TTypestate> {
-    this.listeners.delete(listener);
-    this.stopListeners.delete(listener);
-    this.doneListeners.delete(listener);
-    this.errorListeners.delete(listener);
-    return this;
-  }
-
-  /**
-   * Starts the interpreter from the given state, or the initial state.
-   * @param initialState The state to start the statechart from
-   */
-  public start(
-    initialState?: State<TContext, TEvent, TTypestate> | StateValue
-  ): Interpreter<TContext, TEvent, TTypestate> {
-    if (this.status === InterpreterStatus.Running) {
+  public start(): this {
+    if (this._processingStatus === ProcessingStatus.Running) {
       // Do not restart the service if it is already started
       return this;
     }
 
-    registry.register(this.sessionId, this.ref);
-    this.status = InterpreterStatus.Running;
+    if (this._syncSnapshot) {
+      this.subscribe({
+        next: (snapshot: Snapshot<unknown>) => {
+          if (snapshot.status === 'active') {
+            this.system._relay(this, this._parent!, {
+              type: `xstate.snapshot.${this.id}`,
+              snapshot
+            });
+          }
+        },
+        error: () => {}
+      });
+    }
 
-    const resolvedState =
-      initialState === undefined
-        ? this.initialState
-        : isState<TContext, TEvent, TTypestate>(initialState)
-        ? this.machine.resolveState(initialState)
-        : this.machine.resolveState(
-            State.from(initialState, this.machine.context)
-          );
+    this.system._register(this.sessionId, this);
+    if (this._systemId) {
+      this.system._set(this._systemId, this);
+    }
+    this._processingStatus = ProcessingStatus.Running;
 
-    this.scheduler.initialize(() => {
-      this.update(resolvedState, initEvent as SCXML.Event<TEvent>);
+    // TODO: this isn't correct when rehydrating
+    const initEvent = createInitEvent(this.options.input);
 
-      if (this.options.devTools) {
-        this.attachDevTools();
-      }
+    this.system._sendInspectionEvent({
+      type: '@xstate.event',
+      sourceRef: this._parent,
+      actorRef: this,
+      event: initEvent
     });
+
+    const status = (this._snapshot as any).status;
+
+    switch (status) {
+      case 'done':
+        // a state machine can be "done" upon initialization (it could reach a final state using initial microsteps)
+        // we still need to complete observers, flush deferreds etc
+        this.update(
+          this._snapshot,
+          initEvent as unknown as EventFromLogic<TLogic>
+        );
+        // TODO: rethink cleanup of observers, mailbox, etc
+        return this;
+      case 'error':
+        this._error((this._snapshot as any).error);
+        return this;
+    }
+
+    if (this.logic.start) {
+      try {
+        this.logic.start(this._snapshot, this._actorScope);
+      } catch (err) {
+        this._snapshot = {
+          ...(this._snapshot as any),
+          status: 'error',
+          error: err
+        };
+        this._error(err);
+        return this;
+      }
+    }
+
+    // TODO: this notifies all subscribers but usually this is redundant
+    // there is no real change happening here
+    // we need to rethink if this needs to be refactored
+    this.update(this._snapshot, initEvent as unknown as EventFromLogic<TLogic>);
+
+    if (this.options.devTools) {
+      this.attachDevTools();
+    }
+
+    this.mailbox.start();
+
+    return this;
+  }
+
+  private _process(event: EventFromLogic<TLogic>) {
+    let nextState;
+    let caughtError;
+    try {
+      nextState = this.logic.transition(
+        this._snapshot,
+        event,
+        this._actorScope
+      );
+    } catch (err) {
+      // we wrap it in a box so we can rethrow it later even if falsy value gets caught here
+      caughtError = { err };
+    }
+
+    if (caughtError) {
+      const { err } = caughtError;
+
+      this._snapshot = {
+        ...(this._snapshot as any),
+        status: 'error',
+        error: err
+      };
+      this._error(err);
+      return;
+    }
+
+    this.update(nextState, event);
+    if (event.type === XSTATE_STOP) {
+      this._stopProcedure();
+      this._complete();
+    }
+  }
+
+  private _stop(): this {
+    if (this._processingStatus === ProcessingStatus.Stopped) {
+      return this;
+    }
+    this.mailbox.clear();
+    if (this._processingStatus === ProcessingStatus.NotStarted) {
+      this._processingStatus = ProcessingStatus.Stopped;
+      return this;
+    }
+    this.mailbox.enqueue({ type: XSTATE_STOP } as any);
+
     return this;
   }
 
   /**
-   * Stops the interpreter and unsubscribe all listeners.
-   *
-   * This will also notify the `onStop` listeners.
+   * Stops the Actor and unsubscribe all listeners.
    */
-  public stop(): Interpreter<TContext, TEvent, TTypestate> {
-    this.listeners.clear();
-    for (const listener of this.stopListeners) {
-      // call listener, then remove
-      listener();
+  public stop(): this {
+    if (this._parent) {
+      throw new Error('A non-root actor cannot be stopped directly.');
     }
-    this.stopListeners.clear();
-    this.doneListeners.clear();
+    return this._stop();
+  }
+  private _complete(): void {
+    for (const observer of this.observers) {
+      try {
+        observer.complete?.();
+      } catch (err) {
+        reportUnhandledError(err);
+      }
+    }
+    this.observers.clear();
+  }
+  private _reportError(err: unknown): void {
+    if (!this.observers.size) {
+      if (!this._parent) {
+        reportUnhandledError(err);
+      }
+      return;
+    }
+    let reportError = false;
 
-    if (!this.initialized) {
-      // Interpreter already stopped; do nothing
+    for (const observer of this.observers) {
+      const errorListener = observer.error;
+      reportError ||= !errorListener;
+      try {
+        errorListener?.(err);
+      } catch (err2) {
+        reportUnhandledError(err2);
+      }
+    }
+    this.observers.clear();
+    if (reportError) {
+      reportUnhandledError(err);
+    }
+  }
+  private _error(err: unknown): void {
+    this._stopProcedure();
+    this._reportError(err);
+    if (this._parent) {
+      this.system._relay(
+        this,
+        this._parent,
+        createErrorActorEvent(this.id, err)
+      );
+    }
+  }
+  // TODO: atm children don't belong entirely to the actor so
+  // in a way - it's not even super aware of them
+  // so we can't stop them from here but we really should!
+  // right now, they are being stopped within the machine's transition
+  // but that could throw and leave us with "orphaned" active actors
+  private _stopProcedure(): this {
+    if (this._processingStatus !== ProcessingStatus.Running) {
+      // Actor already stopped; do nothing
       return this;
     }
 
-    this.state.configuration.forEach((stateNode) => {
-      for (const action of stateNode.definition.exit) {
-        this.exec(action, this.state);
-      }
-    });
-
-    // Stop all children
-    this.children.forEach((child) => {
-      if (isFunction(child.stop)) {
-        child.stop();
-      }
-    });
-
     // Cancel all delayed events
-    for (const key of keys(this.delayedEventsMap)) {
+    for (const key of Object.keys(this.delayedEventsMap)) {
       this.clock.clearTimeout(this.delayedEventsMap[key]);
     }
 
-    this.scheduler.clear();
-    this.status = InterpreterStatus.Stopped;
-    registry.free(this.sessionId);
+    // TODO: mailbox.reset
+    this.mailbox.clear();
+    // TODO: after `stop` we must prepare ourselves for receiving events again
+    // events sent *after* stop signal must be queued
+    // it seems like this should be the common behavior for all of our consumers
+    // so perhaps this should be unified somehow for all of them
+    this.mailbox = new Mailbox(this._process.bind(this));
+
+    this._processingStatus = ProcessingStatus.Stopped;
+    this.system._unregister(this);
 
     return this;
   }
 
-  private _transition(
-    state: State<TContext, TEvent, any>,
-    event: SCXML.Event<TEvent>
-  ) {
-    try {
-      CapturedState.current = {
-        actorRef: this.ref,
-        spawns: []
-      };
-      return this.machine.transition(state, event);
-    } finally {
-      CapturedState.current = {
-        actorRef: undefined,
-        spawns: []
-      };
-    }
-  }
-
   /**
-   * Sends an event to the running interpreter to trigger a transition.
-   *
-   * An array of events (batched) can be sent as well, which will send all
-   * batched events to the running interpreter. The listeners will be
-   * notified only **once** when all events are processed.
-   *
-   * @param event The event(s) to send
+   * @internal
    */
-  public send: PayloadSender<TEvent> = (event, payload?): void => {
-    if (isArray(event)) {
-      this.batch(event);
-      return;
-    }
-
-    const eventObject = toEventObject(event, payload);
-    const _event = toSCXMLEvent(eventObject);
-
-    if (this.status === InterpreterStatus.Stopped) {
+  public _send(event: EventFromLogic<TLogic>) {
+    if (this._processingStatus === ProcessingStatus.Stopped) {
       // do nothing
-      if (!IS_PRODUCTION) {
-        warn(
-          false,
-          `Event "${_event.name}" was sent to stopped service "${
-            this.machine.key
-          }". This service has already reached its final state, and will not transition.\nEvent: ${JSON.stringify(
-            _event.data
-          )}`
+      if (isDevelopment) {
+        const eventString = JSON.stringify(event);
+
+        console.warn(
+          `Event "${event.type}" was sent to stopped actor "${this.id} (${this.sessionId})". This actor has already reached its final state, and will not transition.\nEvent: ${eventString}`
         );
       }
       return;
     }
 
-    if (
-      this.status !== InterpreterStatus.Running &&
-      !this.options.deferEvents
-    ) {
-      throw new Error(
-        `Event "${_event.name}" was sent to uninitialized service "${
-          this.machine.key
-          // tslint:disable-next-line:max-line-length
-        }". Make sure .start() is called for this service, or set { deferEvents: true } in the service options.\nEvent: ${JSON.stringify(
-          _event.data
-        )}`
-      );
-    }
-
-    this.scheduler.schedule(() => {
-      // Forward copy of event to child actors
-      this.forward(_event);
-
-      const nextState = this.nextState(_event);
-
-      this.update(nextState, _event);
-    });
-  };
-
-  public batch(events: Array<TEvent | TEvent['type']>): void {
-    if (
-      this.status === InterpreterStatus.NotStarted &&
-      this.options.deferEvents
-    ) {
-      // tslint:disable-next-line:no-console
-      if (!IS_PRODUCTION) {
-        warn(
-          false,
-          `${events.length} event(s) were sent to uninitialized service "${
-            this.machine.key
-          }" and are deferred. Make sure .start()  is called for this service.\nEvents: ${JSON.stringify(
-            events
-          )}`
-        );
-      }
-    } else if (this.status !== InterpreterStatus.Running) {
-      throw new Error(
-        // tslint:disable-next-line:max-line-length
-        `${events.length} event(s) were sent to uninitialized service "${this.machine.key}". Make sure .start() is called for this service, or set { deferEvents: true } in the service options.`
-      );
-    }
-
-    this.scheduler.schedule(() => {
-      let nextState = this.state;
-      let batchChanged = false;
-      const batchedActions: Array<ActionObject<TContext, TEvent>> = [];
-      for (const event of events) {
-        const _event = toSCXMLEvent(event);
-
-        this.forward(_event);
-
-        nextState = this._transition(nextState, _event);
-
-        batchedActions.push(
-          ...(nextState.actions.map((a) =>
-            bindActionToState(a, nextState)
-          ) as Array<ActionObject<TContext, TEvent>>)
-        );
-
-        batchChanged = batchChanged || !!nextState.changed;
-      }
-
-      nextState.changed = batchChanged;
-      nextState.actions = batchedActions;
-      this.update(nextState, toSCXMLEvent(events[events.length - 1]));
-    });
+    this.mailbox.enqueue(event);
   }
 
-  private sendTo(
-    event: SCXML.Event<AnyEventObject>,
-    to: string | ActorRef<any>
-  ) {
-    const isParent = this.parent && to === SpecialTargets.Parent;
-    const target = isParent
-      ? this.parent
-      : isActorRef(to)
-      ? to
-      : this.children.get(to);
-
-    if (!target) {
-      if (!isParent) {
-        const executionError = new Error(
-          `Unable to send event to child '${to}' from service '${this.name}'.`
-        );
-        this.send(
-          toSCXMLEvent<TEvent>(actionTypes.errorExecution, {
-            data: executionError as any // TODO: refine
-          }) as any // TODO: fix
-        );
-      }
-
-      // tslint:disable-next-line:no-console
-      if (!IS_PRODUCTION) {
-        warn(
-          false,
-          `Service '${this.name}' has no parent: unable to send event ${event.type}`
-        );
-      }
-      return;
-    }
-
-    target.send({
-      ...event,
-      name:
-        event.name === actionTypes.error ? `${error(this.name)}` : event.name,
-      origin: this
-    });
-  }
   /**
-   * Returns the next state given the interpreter's current state and the event.
+   * Sends an event to the running Actor to trigger a transition.
    *
-   * This is a pure method that does _not_ update the interpreter's state.
-   *
-   * @param event The event to determine the next state
+   * @param event The event to send
    */
-  public nextState(
-    event: Event<TEvent> | SCXML.Event<TEvent>
-  ): State<TContext, TEvent, TTypestate> {
-    const _event = toSCXMLEvent(event);
-
-    if (
-      isSCXMLErrorEvent(_event) &&
-      !this.state.nextEvents.some((nextEvent) => nextEvent === _event.name)
-    ) {
-      this.handleErrorEvent(_event);
+  public send(event: EventFromLogic<TLogic>) {
+    if (isDevelopment && typeof event === 'string') {
+      throw new Error(
+        `Only event objects may be sent to actors; use .send({ type: "${event}" }) instead`
+      );
     }
-
-    return this._transition(this.state, _event);
+    this.system._relay(undefined, this, event);
   }
-  private forward(event: SCXML.Event<TEvent>): void {
-    for (const id of this.forwardTo) {
-      const child = this.children.get(id);
 
-      if (!child) {
-        throw new Error(
-          `Unable to forward event '${event.name}' from interpreter '${this.name}' to nonexistant child '${id}'.`
-        );
-      }
+  /**
+   * TODO: figure out a way to do this within the machine
+   * @internal
+   */
+  public delaySend(params: {
+    event: EventObject;
+    id: string | undefined;
+    delay: number;
+    to?: AnyActorRef;
+  }): void {
+    const { event, id, delay } = params;
+    const timerId = this.clock.setTimeout(() => {
+      this.system._relay(
+        this,
+        params.to ?? this,
+        event as EventFromLogic<TLogic>
+      );
+    }, delay);
 
-      child.send(event);
+    // TODO: consider the rehydration story here
+    if (id) {
+      this.delayedEventsMap[id] = timerId;
     }
   }
-  private defer(sendAction: SendActionObject<TContext, TEvent>): void {
-    this.delayedEventsMap[sendAction.id] = this.clock.setTimeout(() => {
-      if (sendAction.to) {
-        this.sendTo(sendAction._event, sendAction.to);
-      } else {
-        this.send(
-          (sendAction as SendActionObject<TContext, TEvent, TEvent>)._event
-        );
-      }
-    }, sendAction.delay as number);
-  }
-  private cancel(sendId: string | number): void {
+
+  /**
+   * TODO: figure out a way to do this within the machine
+   * @internal
+   */
+  public cancel(sendId: string | number): void {
     this.clock.clearTimeout(this.delayedEventsMap[sendId]);
     delete this.delayedEventsMap[sendId];
-  }
-  private exec(
-    action: InvokeActionObject | ActionObject<TContext, TEvent>,
-    state: State<TContext, TEvent, TTypestate>,
-    actionFunctionMap: ActionFunctionMap<TContext, TEvent> = this.machine
-      .options.actions
-  ): void {
-    const { context, _event } = state;
-    const actionOrExec =
-      action.exec || getActionFunction(action.type, actionFunctionMap);
-    const exec = isFunction(actionOrExec)
-      ? actionOrExec
-      : actionOrExec
-      ? actionOrExec.exec
-      : action.exec;
-
-    if (exec) {
-      try {
-        return exec(context, _event.data, {
-          action,
-          state: this.state,
-          _event
-        });
-      } catch (err) {
-        if (this.parent) {
-          this.parent.send({
-            type: 'xstate.error',
-            data: err
-          } as EventObject);
-        }
-
-        throw err;
-      }
-    }
-
-    switch (action.type) {
-      case actionTypes.send:
-        const sendAction = action as SendActionObject<TContext, TEvent>;
-
-        if (typeof sendAction.delay === 'number') {
-          this.defer(sendAction);
-          return;
-        } else {
-          if (sendAction.to) {
-            this.sendTo(sendAction._event, sendAction.to);
-          } else {
-            this.send(
-              (sendAction as SendActionObject<TContext, TEvent, TEvent>)._event
-            );
-          }
-        }
-        break;
-
-      case actionTypes.cancel:
-        this.cancel((action as CancelActionObject<TContext, TEvent>).sendId);
-
-        break;
-
-      case ActionTypes.Invoke: {
-        const { id, autoForward, ref } = action as InvokeActionObject;
-        if (!ref) {
-          break;
-        }
-        (ref as any).parent = this; // TODO: fix
-        // If the actor will be stopped right after it's started
-        // (such as in transient states) don't bother starting the actor.
-        if (
-          state.actions.find((otherAction) => {
-            return (
-              otherAction.type === actionTypes.stop && otherAction.actor === id
-            );
-          })
-        ) {
-          return;
-        }
-        try {
-          if (autoForward) {
-            this.forwardTo.add(id);
-          }
-
-          this.children.set(id, ref);
-          this.state.children[id] = ref;
-
-          ref.subscribe({
-            error: () => {
-              // TODO: handle error
-              this.stop();
-            },
-            complete: () => {
-              /* ... */
-            }
-          });
-
-          ref.start?.();
-        } catch (err) {
-          this.send(error(id, err));
-          break;
-        }
-
-        break;
-      }
-      case actionTypes.stop: {
-        const { actor } = action as StopActionObject;
-        const actorRef =
-          typeof actor === 'string' ? this.children.get(actor) : actor;
-
-        if (actorRef) {
-          this.stopChild(actorRef.name);
-        }
-        break;
-      }
-
-      case actionTypes.log:
-        const { label, value } = action;
-
-        if (label) {
-          this.logger(label, value);
-        } else {
-          this.logger(value);
-        }
-        break;
-      case actionTypes.assign:
-        break;
-      default:
-        if (!IS_PRODUCTION) {
-          warn(
-            false,
-            `No implementation found for action type '${action.type}'`
-          );
-        }
-        break;
-    }
-
-    return undefined;
-  }
-
-  private stopChild(childId: string): void {
-    const child = this.children.get(childId);
-    if (!child) {
-      return;
-    }
-
-    this.children.delete(childId);
-    this.forwardTo.delete(childId);
-    delete this.state.children[childId];
-
-    if (isFunction(child.stop)) {
-      child.stop();
-    }
   }
 
   private attachDevTools(): void {
@@ -839,50 +676,107 @@ export class Interpreter<
   }
   public toJSON() {
     return {
-      id: this.name
+      xstate$$type: $$ACTOR_TYPE,
+      id: this.id
     };
   }
 
-  public [symbolObservable](): Subscribable<
-    State<TContext, TEvent, TTypestate>
-  > {
+  /**
+   * Obtain the internal state of the actor, which can be persisted.
+   *
+   * @remarks
+   * The internal state can be persisted from any actor, not only machines.
+   *
+   * Note that the persisted state is not the same as the snapshot from {@link Actor.getSnapshot}. Persisted state represents the internal state of the actor, while snapshots represent the actor's last emitted value.
+   *
+   * Can be restored with {@link ActorOptions.state}
+   *
+   * @see https://stately.ai/docs/persistence
+   */
+  public getPersistedSnapshot(): Snapshot<unknown>;
+  public getPersistedSnapshot(options?: unknown): Snapshot<unknown> {
+    return this.logic.getPersistedSnapshot(this._snapshot, options);
+  }
+
+  public [symbolObservable](): InteropSubscribable<SnapshotFrom<TLogic>> {
     return this;
   }
 
-  // this gets stripped by Babel to avoid having "undefined" property in environments without this non-standard Symbol
-  // it has to be here to be included in the generated .d.ts
-  public [Symbol.observable](): Subscribable<
-    State<TContext, TEvent, TTypestate>
-  > {
-    return this;
+  /**
+   * Read an actor’s snapshot synchronously.
+   *
+   * @remarks
+   * The snapshot represent an actor's last emitted value.
+   *
+   * When an actor receives an event, its internal state may change.
+   * An actor may emit a snapshot when a state transition occurs.
+   *
+   * Note that some actors, such as callback actors generated with `fromCallback`, will not emit snapshots.
+   *
+   * @see {@link Actor.subscribe} to subscribe to an actor’s snapshot values.
+   * @see {@link Actor.getPersistedSnapshot} to persist the internal state of an actor (which is more than just a snapshot).
+   */
+  public getSnapshot(): SnapshotFrom<TLogic> {
+    return this._snapshot;
   }
+}
 
-  public getSnapshot() {
-    if (this.status === InterpreterStatus.NotStarted) {
-      return this.initialState;
-    }
-    return this._state!;
-  }
+/**
+ * Creates a new actor instance for the given actor logic with the provided options, if any.
+ *
+ * @remarks
+ * When you create an actor from actor logic via `createActor(logic)`, you implicitly create an actor system where the created actor is the root actor.
+ * Any actors spawned from this root actor and its descendants are part of that actor system.
+ *
+ * @example
+ * ```ts
+ * import { createActor } from 'xstate';
+ * import { someActorLogic } from './someActorLogic.ts';
+ *
+ * // Creating the actor, which implicitly creates an actor system with itself as the root actor
+ * const actor = createActor(someActorLogic);
+ *
+ * actor.subscribe((snapshot) => {
+ *   console.log(snapshot);
+ * });
+ *
+ * // Actors must be started by calling `actor.start()`, which will also start the actor system.
+ * actor.start();
+ *
+ * // Actors can receive events
+ * actor.send({ type: 'someEvent' });
+ *
+ * // You can stop root actors by calling `actor.stop()`, which will also stop the actor system and all actors in that system.
+ * actor.stop();
+ * ```
+ *
+ * @param logic - The actor logic to create an actor from. For a state machine actor logic creator, see {@link createMachine}. Other actor logic creators include {@link fromCallback}, {@link fromEventObservable}, {@link fromObservable}, {@link fromPromise}, and {@link fromTransition}.
+ * @param options - Actor options
+ */
+export function createActor<TLogic extends AnyActorLogic>(
+  logic: TLogic extends AnyStateMachine
+    ? AreAllImplementationsAssumedToBeProvided<
+        TLogic['__TResolvedTypesMeta']
+      > extends true
+      ? TLogic
+      : MissingImplementationsError<TLogic['__TResolvedTypesMeta']>
+    : TLogic,
+  options?: ActorOptions<TLogic>
+): Actor<TLogic>;
+export function createActor(logic: any, options?: ActorOptions<any>): any {
+  const interpreter = new Actor(logic, options);
+
+  return interpreter;
 }
 
 /**
  * Creates a new Interpreter instance for the given machine with the provided options, if any.
  *
- * @param machine The machine to interpret
- * @param options Interpreter options
+ * @deprecated Use `createActor` instead
  */
-export function interpret<
-  TContext extends MachineContext,
-  TEvent extends EventObject = EventObject,
-  TTypestate extends Typestate<TContext> = { value: any; context: TContext }
->(
-  machine: StateMachine<TContext, TEvent, TTypestate>,
-  options?: Partial<InterpreterOptions>
-) {
-  const interpreter = new Interpreter<TContext, TEvent, TTypestate>(
-    machine,
-    options
-  );
+export const interpret = createActor;
 
-  return interpreter;
-}
+/**
+ * @deprecated Use `Actor` instead.
+ */
+export type Interpreter = typeof Actor;

@@ -1,312 +1,496 @@
+import isDevelopment from '#is-development';
+import { $$ACTOR_TYPE } from './interpreter.ts';
+import type { StateNode } from './StateNode.ts';
+import type { StateMachine } from './StateMachine.ts';
+import { getStateValue } from './stateUtils.ts';
+import { TypegenDisabled } from './typegenTypes.ts';
 import type {
-  StateValue,
+  ProvidedActor,
+  AnyMachineSnapshot,
+  AnyStateMachine,
   EventObject,
-  ActionObject,
-  EventType,
-  StateConfig,
-  SCXML,
-  TransitionDefinition,
-  Typestate,
   HistoryValue,
-  NullEvent,
-  ActorRef,
   MachineContext,
-  SimpleEventsOf
-} from './types';
-import { matchesState, keys, isString, warn } from './utils';
-import type { StateNode } from './StateNode';
-import {
-  isInFinalState,
-  nextEvents,
-  getMeta,
-  getTagsFromConfiguration
-} from './stateUtils';
-import { initEvent } from './actions';
-import { IS_PRODUCTION } from './environment';
-import type { MachineNode } from '.';
+  StateConfig,
+  StateValue,
+  AnyActorRef,
+  Snapshot,
+  ParameterizedObject,
+  IsNever
+} from './types.ts';
+import { matchesState } from './utils.ts';
 
-export function isState<
-  TContext extends MachineContext,
-  TEvent extends EventObject,
-  TTypestate extends Typestate<TContext> = { value: any; context: TContext }
->(state: object | string): state is State<TContext, TEvent, TTypestate> {
-  if (isString(state)) {
-    return false;
-  }
+type ToTestStateValue<TStateValue extends StateValue> =
+  TStateValue extends string
+    ? TStateValue
+    : IsNever<keyof TStateValue> extends true
+      ? never
+      :
+          | keyof TStateValue
+          | {
+              [K in keyof TStateValue]?: ToTestStateValue<
+                NonNullable<TStateValue[K]>
+              >;
+            };
 
-  return 'value' in state && 'history' in state;
-}
-export function bindActionToState<
+export function isMachineSnapshot<
   TContext extends MachineContext,
   TEvent extends EventObject
->(
-  action: ActionObject<TContext, TEvent>,
-  state: State<TContext, TEvent, any>
-): ActionObject<TContext, TEvent> {
-  const { exec } = action;
-  const boundAction: ActionObject<TContext, TEvent> = {
-    ...action,
-    exec:
-      exec !== undefined
-        ? () =>
-            exec(state.context, state.event as TEvent, {
-              action,
-              state,
-              _event: state._event
-            })
-        : undefined
-  };
-
-  return boundAction;
+>(value: unknown): value is AnyMachineSnapshot {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    'machine' in value &&
+    'value' in value
+  );
 }
 
-export class State<
+interface MachineSnapshotBase<
   TContext extends MachineContext,
-  TEvent extends EventObject = EventObject,
-  TTypestate extends Typestate<TContext> = { value: any; context: TContext }
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
 > {
-  public value: StateValue;
-  public context: TContext;
-  public history?: State<TContext, TEvent, TTypestate>;
-  public historyValue: HistoryValue<TContext, TEvent> = {};
-  public actions: Array<ActionObject<TContext, TEvent>> = [];
-  public meta: any = {};
-  public event: TEvent;
-  public _internalQueue: Array<SCXML.Event<TEvent> | NullEvent> = [];
-  public _event: SCXML.Event<TEvent>;
-  public _sessionid: string | null;
-  public _initial: boolean = false;
-  /**
-   * Indicates whether the state has changed from the previous state. A state is considered "changed" if:
-   *
-   * - Its value is not equal to its previous value, or:
-   * - It has any new actions (side-effects) to execute.
-   *
-   * An initial state (with no history) will return `undefined`.
-   */
-  public changed: boolean | undefined;
+  machine: StateMachine<
+    TContext,
+    TEvent,
+    TChildren,
+    ProvidedActor,
+    ParameterizedObject,
+    ParameterizedObject,
+    string,
+    TStateValue,
+    TTag,
+    unknown,
+    TOutput,
+    TResolvedTypesMeta
+  >;
+  tags: Set<string>;
+  value: TStateValue;
+  status: 'active' | 'done' | 'error' | 'stopped';
+  error: unknown;
+  context: TContext;
+
+  historyValue: Readonly<HistoryValue<TContext, TEvent>>;
   /**
    * The enabled state nodes representative of the state value.
    */
-  public configuration: Array<StateNode<TContext, TEvent>>;
-  /**
-   * The next events that will cause a transition from the current state.
-   */
-  // @ts-ignore - getter for this gets configured in constructor so this property can stay non-enumerable
-  public nextEvents: EventType[];
-  /**
-   * The transition definitions that resulted in this state.
-   */
-  public transitions: Array<TransitionDefinition<TContext, TEvent>>;
+  _nodes: Array<StateNode<TContext, TEvent>>;
   /**
    * An object mapping actor names to spawned/invoked actors.
    */
-  public children: Record<string, ActorRef<any>>;
-  public tags: Set<string>;
-  public machine: MachineNode<TContext, TEvent, TTypestate> | undefined;
-  /**
-   * Creates a new State instance for the given `stateValue` and `context`.
-   * @param stateValue
-   * @param context
-   */
-  public static from<
-    TContext extends MachineContext,
-    TEvent extends EventObject = EventObject
-  >(
-    stateValue: State<TContext, TEvent, any> | StateValue,
-    context: TContext = {} as TContext
-  ): State<TContext, TEvent, any> {
-    if (stateValue instanceof State) {
-      if (stateValue.context !== context) {
-        return new State<TContext, TEvent>({
-          value: stateValue.value,
-          context,
-          _event: stateValue._event,
-          _sessionid: null,
-          history: stateValue.history,
-          actions: [],
-          meta: {},
-          configuration: [], // TODO: fix,
-          transitions: [],
-          children: {}
-        });
-      }
-
-      return stateValue;
-    }
-
-    const _event = initEvent as SCXML.Event<TEvent>;
-
-    return new State<TContext, TEvent>({
-      value: stateValue,
-      context,
-      _event,
-      _sessionid: null,
-      history: undefined,
-      actions: [],
-      meta: undefined,
-      configuration: [],
-      transitions: [],
-      children: {}
-    });
-  }
-  /**
-   * Creates a new State instance for the given `config`.
-   * @param config The state config
-   */
-  public static create<
-    TContext extends MachineContext,
-    TEvent extends EventObject = EventObject
-  >(config: StateConfig<TContext, TEvent>): State<TContext, TEvent, any> {
-    return new State(config);
-  }
-  /**
-   * Creates a new `State` instance for the given `stateValue` and `context` with no actions (side-effects).
-   * @param stateValue
-   * @param context
-   */
-  public static inert<TState extends State<any, any, any>>(
-    state: TState
-  ): TState;
-  public static inert<
-    TContext extends MachineContext,
-    TEvent extends EventObject = EventObject
-  >(stateValue: StateValue, context: TContext): State<TContext, TEvent>;
-  public static inert(
-    stateValue: State<any, any> | StateValue,
-    context?: MachineContext
-  ): State<any, any> {
-    if (stateValue instanceof State) {
-      if (!stateValue.actions.length) {
-        return stateValue;
-      }
-      const _event = initEvent as SCXML.Event<any>;
-
-      return new State<any>({
-        value: stateValue.value,
-        context: stateValue.context,
-        _event,
-        _sessionid: null,
-        history: stateValue.history,
-        configuration: stateValue.configuration,
-        transitions: [],
-        children: stateValue.children
-      });
-    }
-
-    return State.from(stateValue, context);
-  }
-
-  /**
-   * Creates a new `State` instance that represents the current state of a running machine.
-   *
-   * @param config
-   */
-  constructor(config: StateConfig<TContext, TEvent>) {
-    this.value = config.value;
-    this.context = config.context;
-    this._event = config._event;
-    this._sessionid = config._sessionid;
-    this.event = this._event.data;
-    this.history = config.history as this;
-    this.historyValue = config.historyValue || {};
-    this.actions = config.actions || [];
-    this.meta = getMeta(config.configuration);
-    this.matches = this.matches.bind(this);
-    this.toStrings = this.toStrings.bind(this);
-    this.configuration = config.configuration;
-    this.transitions = config.transitions;
-    this.children = config.children;
-    this.tags = config.configuration
-      ? getTagsFromConfiguration(config.configuration)
-      : config.tags
-      ? new Set(config.tags)
-      : new Set();
-    this.machine = config.machine;
-
-    Object.defineProperty(this, 'nextEvents', {
-      enumerable: false,
-      get: () => {
-        return nextEvents(this.configuration);
-      }
-    });
-  }
-
-  /**
-   * Returns an array of all the string leaf state node paths.
-   * @param stateValue
-   * @param delimiter The character(s) that separate each subpath in the string state node path.
-   */
-  public toStrings(
-    stateValue: StateValue = this.value,
-    delimiter: string = '.'
-  ): string[] {
-    if (isString(stateValue)) {
-      return [stateValue];
-    }
-    const valueKeys = keys(stateValue);
-
-    return valueKeys.concat(
-      ...valueKeys.map((key) =>
-        this.toStrings(stateValue[key], delimiter).map(
-          (s) => key + delimiter + s
-        )
-      )
-    );
-  }
-
-  public toJSON() {
-    const { configuration, transitions, tags, machine, ...jsonValues } = this;
-
-    return { ...jsonValues, tags: Array.from(tags) };
-  }
+  children: TChildren;
 
   /**
    * Whether the current state value is a subset of the given parent state value.
-   * @param parentStateValue
+   * @param testValue
    */
-  public matches<TSV extends TTypestate['value']>(
-    parentStateValue: TSV
-  ): this is State<
-    (TTypestate extends any
-      ? { value: TSV; context: any } extends TTypestate
-        ? TTypestate
-        : never
-      : never)['context'],
-    TEvent,
-    TTypestate
-  > & { value: TSV } {
-    return matchesState(parentStateValue as StateValue, this.value);
-  }
+  matches: (
+    this: MachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >,
+    testValue: ToTestStateValue<TStateValue>
+  ) => boolean;
 
   /**
-   * Indicates whether the state is a final state.
-   */
-  public get done(): boolean {
-    return isInFinalState(this.configuration);
-  }
-
-  /**
-   * Whether the current state configuration has a state node with the specified `tag`.
+   * Whether the current state nodes has a state node with the specified `tag`.
    * @param tag
    */
-  public hasTag(tag: string): boolean {
-    return this.tags.has(tag);
-  }
+  hasTag: (
+    this: MachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >,
+    tag: TTag
+  ) => boolean;
 
   /**
-   * Determines whether sending the `event` will cause a transition.
+   * Determines whether sending the `event` will cause a non-forbidden transition
+   * to be selected, even if the transitions have no actions nor
+   * change the state value.
+   *
    * @param event The event to test
    * @returns Whether the event will cause a transition
    */
-  public can(event: TEvent | SimpleEventsOf<TEvent>['type']): boolean {
-    if (IS_PRODUCTION) {
-      warn(
-        !!this.machine,
-        `state.can(...) used outside of a machine-created State object; this will always return false.`
-      );
-    }
+  can: (
+    this: MachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >,
+    event: TEvent
+  ) => boolean;
 
-    return !!this.machine?.transition(this, event).changed;
+  getMeta: (
+    this: MachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >
+  ) => Record<string, any>;
+
+  toJSON: (
+    this: MachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >
+  ) => unknown;
+}
+
+interface ActiveMachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+> extends MachineSnapshotBase<
+    TContext,
+    TEvent,
+    TChildren,
+    TStateValue,
+    TTag,
+    TOutput,
+    TResolvedTypesMeta
+  > {
+  status: 'active';
+  output: undefined;
+  error: undefined;
+}
+
+interface DoneMachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+> extends MachineSnapshotBase<
+    TContext,
+    TEvent,
+    TChildren,
+    TStateValue,
+    TTag,
+    TOutput,
+    TResolvedTypesMeta
+  > {
+  status: 'done';
+  output: TOutput;
+  error: undefined;
+}
+
+interface ErrorMachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+> extends MachineSnapshotBase<
+    TContext,
+    TEvent,
+    TChildren,
+    TStateValue,
+    TTag,
+    TOutput,
+    TResolvedTypesMeta
+  > {
+  status: 'error';
+  output: undefined;
+  error: unknown;
+}
+
+interface StoppedMachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+> extends MachineSnapshotBase<
+    TContext,
+    TEvent,
+    TChildren,
+    TStateValue,
+    TTag,
+    TOutput,
+    TResolvedTypesMeta
+  > {
+  status: 'stopped';
+  output: undefined;
+  error: undefined;
+}
+
+export type MachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+> =
+  | ActiveMachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >
+  | DoneMachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >
+  | ErrorMachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >
+  | StoppedMachineSnapshot<
+      TContext,
+      TEvent,
+      TChildren,
+      TStateValue,
+      TTag,
+      TOutput,
+      TResolvedTypesMeta
+    >;
+
+const machineSnapshotMatches = function matches(
+  this: AnyMachineSnapshot,
+  testValue: StateValue
+) {
+  return matchesState(testValue, this.value);
+};
+
+const machineSnapshotHasTag = function hasTag(
+  this: AnyMachineSnapshot,
+  tag: string
+) {
+  return this.tags.has(tag);
+};
+
+const machineSnapshotCan = function can(
+  this: AnyMachineSnapshot,
+  event: EventObject
+) {
+  if (isDevelopment && !this.machine) {
+    console.warn(
+      `state.can(...) used outside of a machine-created State object; this will always return false.`
+    );
   }
+
+  const transitionData = this.machine.getTransitionData(this, event);
+
+  return (
+    !!transitionData?.length &&
+    // Check that at least one transition is not forbidden
+    transitionData.some((t) => t.target !== undefined || t.actions.length)
+  );
+};
+
+const machineSnapshotToJSON = function toJSON(this: AnyMachineSnapshot) {
+  const {
+    _nodes: nodes,
+    tags,
+    machine,
+    getMeta,
+    toJSON,
+    can,
+    hasTag,
+    matches,
+    ...jsonValues
+  } = this;
+  return { ...jsonValues, tags: Array.from(tags) };
+};
+
+const machineSnapshotGetMeta = function getMeta(this: AnyMachineSnapshot) {
+  return this._nodes.reduce(
+    (acc, stateNode) => {
+      if (stateNode.meta !== undefined) {
+        acc[stateNode.id] = stateNode.meta;
+      }
+      return acc;
+    },
+    {} as Record<string, any>
+  );
+};
+
+export function createMachineSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TResolvedTypesMeta = TypegenDisabled
+>(
+  config: StateConfig<TContext, TEvent>,
+  machine: AnyStateMachine
+): MachineSnapshot<
+  TContext,
+  TEvent,
+  TChildren,
+  TStateValue,
+  TTag,
+  undefined,
+  TResolvedTypesMeta
+> {
+  return {
+    status: config.status as never,
+    output: config.output,
+    error: config.error,
+    machine,
+    context: config.context,
+    _nodes: config._nodes,
+    value: getStateValue(machine.root, config._nodes) as never,
+    tags: new Set(config._nodes.flatMap((sn) => sn.tags)),
+    children: config.children as any,
+    historyValue: config.historyValue || {},
+    matches: machineSnapshotMatches as never,
+    hasTag: machineSnapshotHasTag,
+    can: machineSnapshotCan,
+    getMeta: machineSnapshotGetMeta,
+    toJSON: machineSnapshotToJSON
+  };
+}
+
+export function cloneMachineSnapshot<TState extends AnyMachineSnapshot>(
+  snapshot: TState,
+  config: Partial<StateConfig<any, any>> = {}
+): TState {
+  return createMachineSnapshot(
+    { ...snapshot, ...config } as StateConfig<any, any>,
+    snapshot.machine
+  ) as TState;
+}
+
+export function getPersistedSnapshot<
+  TContext extends MachineContext,
+  TEvent extends EventObject,
+  TChildren extends Record<string, AnyActorRef | undefined>,
+  TStateValue extends StateValue,
+  TTag extends string,
+  TOutput,
+  TResolvedTypesMeta = TypegenDisabled
+>(
+  snapshot: MachineSnapshot<
+    TContext,
+    TEvent,
+    TChildren,
+    TStateValue,
+    TTag,
+    TOutput,
+    TResolvedTypesMeta
+  >,
+  options?: unknown
+): Snapshot<unknown> {
+  const {
+    _nodes: nodes,
+    tags,
+    machine,
+    children,
+    context,
+    can,
+    hasTag,
+    matches,
+    getMeta,
+    toJSON,
+    ...jsonValues
+  } = snapshot;
+
+  const childrenJson: Record<string, unknown> = {};
+
+  for (const id in children) {
+    const child = children[id] as any;
+    if (
+      isDevelopment &&
+      typeof child.src !== 'string' &&
+      (!options || !('__unsafeAllowInlineActors' in (options as object)))
+    ) {
+      throw new Error('An inline child actor cannot be persisted.');
+    }
+    childrenJson[id as keyof typeof childrenJson] = {
+      snapshot: child.getPersistedSnapshot(options),
+      src: child.src,
+      systemId: child._systemId,
+      syncSnapshot: child._syncSnapshot
+    };
+  }
+
+  const persisted = {
+    ...jsonValues,
+    context: persistContext(context) as any,
+    children: childrenJson
+  };
+
+  return persisted;
+}
+
+function persistContext(contextPart: Record<string, unknown>) {
+  let copy: typeof contextPart | undefined;
+  for (const key in contextPart) {
+    const value = contextPart[key];
+    if (value && typeof value === 'object') {
+      if ('sessionId' in value && 'send' in value && 'ref' in value) {
+        copy ??= Array.isArray(contextPart)
+          ? (contextPart.slice() as typeof contextPart)
+          : { ...contextPart };
+        copy[key] = {
+          xstate$$type: $$ACTOR_TYPE,
+          id: (value as any as AnyActorRef).id
+        };
+      } else {
+        const result = persistContext(value as typeof contextPart);
+        if (result !== value) {
+          copy ??= Array.isArray(contextPart)
+            ? (contextPart.slice() as typeof contextPart)
+            : { ...contextPart };
+          copy[key] = result;
+        }
+      }
+    }
+  }
+  return copy ?? contextPart;
 }

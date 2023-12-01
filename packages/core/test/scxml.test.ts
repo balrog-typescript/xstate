@@ -1,13 +1,15 @@
+import { clearConsoleMocks } from '@xstate-repo/jest-utils';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as pkgUp from 'pkg-up';
-
-import { toMachine } from '../src/scxml';
-import { interpret } from '../src/interpreter';
 import { SimulatedClock } from '../src/SimulatedClock';
-import { State } from '../src';
+import {
+  AnyMachineSnapshot,
+  AnyStateMachine,
+  createActor
+} from '../src/index.ts';
+import { toMachine, sanitizeStateId } from '../src/scxml';
 import { getStateNodes } from '../src/stateUtils';
-import { StateMachine } from '../src/StateMachine';
 
 const TEST_FRAMEWORK = path.dirname(
   pkgUp.sync({
@@ -15,8 +17,7 @@ const TEST_FRAMEWORK = path.dirname(
   }) as string
 );
 
-// @ts-ignore
-const testGroups = {
+const testGroups: Record<string, string[]> = {
   actionSend: [
     'send1',
     'send2',
@@ -29,13 +30,16 @@ const testGroups = {
     'send8b',
     'send9'
   ],
-  assign: ['assign_invalid', 'assign_obj_literal'],
+  assign: [
+    // 'assign_invalid', // this has a syntax error on purpose, so it's not included
+    // 'assign_obj_literal' // deep initial states are not supported
+  ],
   'assign-current-small-step': ['test0', 'test1', 'test2', 'test3', 'test4'],
   basic: ['basic0', 'basic1', 'basic2'],
   'cond-js': ['test0', 'test1', 'test2', 'TestConditionalTransition'],
   data: [
     // 'data_invalid',
-    'data_obj_literal'
+    // 'data_obj_literal' // deep initial states are not supported
   ],
   'default-initial-state': ['initial1', 'initial2'],
   delayedSend: ['send1', 'send2', 'send3'],
@@ -61,7 +65,7 @@ const testGroups = {
   'if-else': ['test0'],
   in: ['TestInPredicate'],
   'internal-transitions': ['test0', 'test1'],
-  misc: ['deep-initial'],
+  // misc: ['deep-initial'], // deep initial states are not supported
   'more-parallel': [
     'test0',
     'test1',
@@ -120,12 +124,12 @@ const testGroups = {
   // script: ['test0', 'test1', 'test2'], // <script/> conversion not implemented
   // 'script-src': ['test0', 'test1', 'test2', 'test3'], // <script/> conversion not implemented
   'scxml-prefix-event-name-matching': [
-    'star0'
+    // 'star0' // this relies on the source order of transitions where * is first and it's supposed to get macthed over an explicit descriptor
     // prefix event matching not implemented yet
     // 'test0',
     // 'test1'
   ],
-  // 'send-data': ['send1'], // <content> conversion not implementd
+  // 'send-data': ['send1'], // <content> conversion not implemented
   // 'send-idlocation': ['test0'],
   // 'send-internal': ['test0'],
   'targetless-transition': ['test0', 'test1', 'test2', 'test3'],
@@ -157,7 +161,7 @@ const testGroups = {
     'test191.txml',
     'test192.txml',
     'test193.txml',
-    'test194.txml',
+    // 'test194.txml', // it's using an invalid event target (another actor), we should be erroring on this somehow when we revamp the error story
     // 'test198.txml', // origintype not implemented yet
     // 'test199.txml', // send type not checked
     'test200.txml',
@@ -173,9 +177,9 @@ const testGroups = {
     // 'test224.txml', // <invoke idlocation="...">
     // 'test225.txml', // unique invokeids generated at invoke time
     // 'test226.txml', // <invoke src="...">
-    'test228.txml',
-    'test229.txml',
-    // 'test230.txml', // Manual test (TODO: check)
+    // 'test228.txml', // this test relies on `invokeid` being available on the event
+    // 'test229.txml', // autoForward not supported in v5
+    // 'test230.txml', // autoForward not supported in v5
     'test232.txml',
     // 'test233.txml', // <finalize> not implemented yet
     // 'test234.txml', // <finalize> not implemented yet
@@ -191,14 +195,14 @@ const testGroups = {
     // 'test245.txml', // conversion of namelist not implemented yet
     'test247.txml',
     // 'test250.txml', // this is a manual test - we could test it by snapshoting logged valued
-    'test252.txml',
+    // 'test252.txml', // this expects the parent to not receive the event sent from the canceled child's exit action
     // 'test253.txml', // _event.origintype not implemented yet
     // 'test276.txml', // <invoke src="...">
     // 'test277.txml', // illegal expression in datamodel creates unbound variable
     // 'test278.txml', // non-root datamodel with early binding not implemented yet
     // 'test279.txml', // non-root datamodel with early binding not implemented yet
     // 'test280.txml', // non-root datamodel with late binding not implemented yet
-    'test286.txml',
+    // 'test286.txml', // this intentionally throws when executing assign, we should be erroring on this somehow when we revamp the error story
     'test287.txml',
     // 'test294.txml', // conversion of <donedata> not implemented yet
     // 'test298.txml', // error.execution when evaluating donedata
@@ -244,17 +248,17 @@ const testGroups = {
     // 'test352.txml', // _event.origintype not implemented yet
     // 'test354.txml', // conversion of namelist not implemented yet
     'test355.txml',
-    'test364.txml',
-    // 'test372.txml', // microstep not implemented correctly for final states
+    // 'test364.txml', // deep initial states are not supported
+    'test372.txml',
     'test375.txml',
     // 'test376.txml', // executable blocks not implemented
     'test377.txml',
     // 'test378.txml', // executable blocks not implemented
     'test387.txml',
-    'test388.txml',
+    // 'test388.txml', // deep initial states are not supported
     'test396.txml',
     'test399.txml',
-    'test401.txml',
+    // 'test401.txml', // this assign to "non-existent" location in the datamodel, this is not exactly allowed in SCXML, but we don't disallow it - since u can assign to just any property on the `context` itself
     // 'test402.txml', // TODO: investigate more, it expects error.execution when evaluating assign, check if assigning to a deep location is even allowed, check if assigning to an initialized datamodel is allowed, improve how datamodel is exposed to constructed functions
     'test403a.txml',
     'test403b.txml',
@@ -286,7 +290,7 @@ const testGroups = {
     // 'test457.txml', // <foreach> not implemented yet
     // 'test459.txml', // <foreach> not implemented yet
     // 'test460.txml', // <foreach> not implemented yet
-    'test487.txml',
+    // 'test487.txml', // this has a syntax error on purpose, so it's not included
     // 'test488.txml', // error.execution when evaluating param
     'test495.txml',
     // 'test496.txml', // error.communication not implemented yet
@@ -295,7 +299,7 @@ const testGroups = {
     'test503.txml',
     'test504.txml',
     'test505.txml',
-    'test506.txml',
+    // 'test506.txml', // `reenter` semantics in v5 are different from SCXML type="internal"/"external" transitions, we respect `reenter` on all state types, not just on compound states
     // 'test509.txml', // Basic HTTP Event I/O processor not implemented
     // 'test510.txml', // Basic HTTP Event I/O processor not implemented
     // 'test518.txml', // Basic HTTP Event I/O processor not implemented
@@ -310,7 +314,7 @@ const testGroups = {
     // 'test530.txml', // https://github.com/davidkpiano/xstate/pull/1811#discussion_r551897693
     // 'test531.txml', // Basic HTTP Event I/O processor not implemented
     // 'test532.txml', // Basic HTTP Event I/O processor not implemented
-    'test533.txml',
+    // 'test533.txml', // we allow `reenter: false` to not leave the source state even if that source state is not compound
     // 'test534.txml', // Basic HTTP Event I/O processor not implemented
     // 'test550.txml', // non-root datamodel with early binding not implemented yet
     // 'test551.txml', // non-root datamodel with early binding not implemented yet
@@ -324,8 +328,8 @@ const testGroups = {
     // 'test562.txml', // test that processor creates space normalized string in _event.data when receiving anything other than KVPs or XML in an event
     // 'test567.txml', // Basic HTTP Event I/O processor not implemented
     // 'test569.txml', // _ioprocessors not yet available for expressions
-    'test570.txml',
-    'test576.txml'
+    'test570.txml'
+    // 'test576.txml' // multiple initial states are not supported
     // 'test577.txml', // Basic HTTP Event I/O processor not implemented
     // 'test578.txml', // conversion of <content> in <send> not implemented yet
     // 'test579.txml' // executable content in history states not implemented yet
@@ -333,7 +337,7 @@ const testGroups = {
   ]
 };
 
-const overrides = {
+const overrides: Record<string, string[]> = {
   'assign-current-small-step': [
     // original using <script/> to manipulate datamodel
     'test0'
@@ -349,34 +353,40 @@ interface SCIONTest {
   }>;
 }
 
-async function runW3TestToCompletion(machine: StateMachine): Promise<void> {
+async function runW3TestToCompletion(machine: AnyStateMachine): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    let nextState: State<any>;
+    let nextState: AnyMachineSnapshot;
+    let prevState: AnyMachineSnapshot;
 
-    interpret(machine)
-      .onTransition((state) => {
+    const actor = createActor(machine, {
+      logger: () => void 0
+    });
+    actor.subscribe({
+      next: (state) => {
+        prevState = nextState;
         nextState = state;
-      })
-      .onDone(() => {
+      },
+      complete: () => {
         // Add 'final' for test230.txml which does not have a 'pass' state
         if (['final', 'pass'].includes(nextState.value as string)) {
           resolve();
         } else {
           reject(
             new Error(
-              `Reached "fail" state with event ${JSON.stringify(
-                nextState.event
-              )} from state ${JSON.stringify(nextState.history?.value)}`
+              `Reached "fail" state from state ${JSON.stringify(
+                prevState?.value
+              )}`
             )
           );
         }
-      })
-      .start();
+      }
+    });
+    actor.start();
   });
 }
 
 async function runTestToCompletion(
-  machine: StateMachine,
+  machine: AnyStateMachine,
   test: SCIONTest
 ): Promise<void> {
   if (!test.events.length && test.initialConfiguration[0] === 'pass') {
@@ -385,27 +395,27 @@ async function runTestToCompletion(
   }
 
   let done = false;
-  let nextState: State<any> = machine.initialState;
-
-  const service = interpret(machine, {
+  const service = createActor(machine, {
     clock: new SimulatedClock()
-  })
-    .onTransition((state) => {
-      // console.log(state._event, state.value);
+  });
 
-      nextState = state;
-    })
-    .onDone(() => {
+  let nextState: AnyMachineSnapshot = service.getSnapshot();
+  let prevState: AnyMachineSnapshot;
+  service.subscribe((state) => {
+    prevState = nextState;
+    nextState = state;
+  });
+  service.subscribe({
+    complete: () => {
       if (nextState.value === 'fail') {
         throw new Error(
-          `Reached "fail" state with event ${JSON.stringify(
-            nextState.event
-          )} from state ${JSON.stringify(nextState.history?.value)}`
+          `Reached "fail" state from state ${JSON.stringify(prevState?.value)}`
         );
       }
       done = true;
-    })
-    .start();
+    }
+  });
+  service.start();
 
   test.events.forEach(({ event, nextConfiguration, after }) => {
     if (done) {
@@ -414,20 +424,20 @@ async function runTestToCompletion(
     if (after) {
       (service.clock as SimulatedClock).increment(after);
     }
-    service.send(event.name);
+    service.send({ type: event.name });
 
-    const stateIds = getStateNodes(machine.root, nextState).map(
+    const stateIds = getStateNodes(machine.root, nextState.value).map(
       (stateNode) => stateNode.id
     );
 
-    expect(stateIds).toContain(nextConfiguration[0]);
+    expect(stateIds).toContain(sanitizeStateId(nextConfiguration[0]));
   });
 }
 
 describe('scxml', () => {
   const onlyTests: string[] = [
     // e.g., 'test399.txml'
-    // 'test286.txml'
+    // 'test175.txml'
   ];
   const testGroupKeys = Object.keys(testGroups);
 
@@ -461,15 +471,15 @@ describe('scxml', () => {
       ) as SCIONTest;
 
       execTest(`${testGroupName}/${testName}`, async () => {
-        const machine = toMachine(scxmlDefinition, {
-          delimiter: '$'
-        });
+        const machine = toMachine(scxmlDefinition);
 
         try {
           await runTestToCompletion(machine, scxmlTest);
         } catch (e) {
           console.log(JSON.stringify(machine.config, null, 2));
           throw e;
+        } finally {
+          clearConsoleMocks();
         }
       });
     });

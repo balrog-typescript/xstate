@@ -1,28 +1,32 @@
-import * as WebSocket from 'ws';
-import { ActorRef, EventObject, interpret, Interpreter } from 'xstate';
-import { toEventObject, toSCXMLEvent } from 'xstate/src/utils';
+import { WebSocketServer } from 'ws';
+import { Actor, EventFromLogic, EventObject, createActor } from 'xstate';
+import { XStateDevInterface } from 'xstate/dev';
+import { InspectMachineEvent, createInspectMachine } from './inspectMachine.ts';
+import { Inspector, Replacer } from './types.ts';
+import { stringify } from './utils.ts';
 
-import { createInspectMachine } from './inspectMachine';
-import { Inspector } from './types';
-import { stringify } from './utils';
-
-const services = new Set<Interpreter<any>>();
-const serviceMap = new Map<string, Interpreter<any>>();
+const services = new Set<Actor<any>>();
+const serviceMap = new Map<string, Actor<any>>();
 const serviceListeners = new Set<any>();
 
 function createDevTools() {
-  globalThis.__xstate__ = {
+  const unregister: XStateDevInterface['unregister'] = (service) => {
+    services.delete(service);
+    serviceMap.delete(service.sessionId);
+  };
+  const devTools: XStateDevInterface = {
     services,
     register: (service) => {
       services.add(service);
       serviceMap.set(service.sessionId, service);
       serviceListeners.forEach((listener) => listener(service));
 
-      service.onStop(() => {
-        services.delete(service);
-        serviceMap.delete(service.sessionId);
+      service.subscribe({
+        complete: () => unregister(service),
+        error: () => unregister(service)
       });
     },
+    unregister,
     onRegister: (listener) => {
       serviceListeners.add(listener);
       services.forEach((service) => listener(service));
@@ -34,47 +38,42 @@ function createDevTools() {
       };
     }
   };
+  (globalThis as any).__xstate__ = devTools;
+  return devTools;
 }
 
 interface ServerInspectorOptions {
-  server: WebSocket.Server;
+  server: WebSocketServer;
+  serialize?: Replacer | undefined;
 }
 
 export function inspect(options: ServerInspectorOptions): Inspector {
   const { server } = options;
-  createDevTools();
-  const inspectService = interpret(
-    createInspectMachine(globalThis.__xstate__)
+  const devTools = createDevTools();
+  const inspectService = createActor(
+    createInspectMachine(devTools, options)
   ).start();
-  let client: ActorRef<any, undefined>;
+  let client = {
+    name: '@@xstate/ws-client',
+    send: (event: any) => {
+      server.clients.forEach((wsClient) => {
+        if (wsClient.readyState === wsClient.OPEN) {
+          wsClient.send(JSON.stringify(event));
+        }
+      });
+    },
+    subscribe: () => {
+      return { unsubscribe: () => void 0 };
+    }
+  };
 
-  server.on('connection', function connection(wss) {
-    client = {
-      name: '@@xstate/ws-client',
-      send: (event: any) => {
-        server.clients.forEach((ws) => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify(event));
-          }
-        });
-      },
-      subscribe: () => {
-        return { unsubscribe: () => void 0 };
-      },
-      getSnapshot: () => undefined
-    };
-
-    wss.on('message', function incoming(message) {
-      let msg: string;
-      if (typeof message === 'string') {
-        msg = message;
-      } else if (message instanceof Buffer) {
-        msg = message.toString('utf8');
-      } else {
+  server.on('connection', function connection(wsClient) {
+    wsClient.on('message', function incoming(data, isBinary) {
+      if (isBinary) {
         return;
       }
 
-      const jsonMessage = JSON.parse(msg);
+      const jsonMessage = JSON.parse(data.toString());
       inspectService.send({
         ...jsonMessage,
         client
@@ -82,18 +81,18 @@ export function inspect(options: ServerInspectorOptions): Inspector {
     });
   });
 
-  globalThis.__xstate__.onRegister((service: Interpreter<any>) => {
+  devTools.onRegister((service: Actor<any>) => {
     inspectService.send({
       type: 'service.register',
-      machine: JSON.stringify(service.machine),
-      state: JSON.stringify(service.state || service.initialState),
+      machine: JSON.stringify(service.logic), // TODO: rename `machine` property
+      state: JSON.stringify(service.getSnapshot()),
       id: service.id,
       sessionId: service.sessionId
     });
 
     inspectService.send({
       type: 'service.event',
-      event: stringify((service.state || service.initialState)._event),
+      event: stringify(service.getSnapshot().event),
       sessionId: service.sessionId
     });
 
@@ -102,61 +101,51 @@ export function inspect(options: ServerInspectorOptions): Inspector {
     // while the sent one is being processed, which throws the order off
     const originalSend = service.send.bind(service);
 
-    service.send = function inspectSend(event: EventObject, payload?: any) {
+    service.send = function inspectSend(event: EventObject) {
       inspectService.send({
         type: 'service.event',
-        event: stringify(
-          toSCXMLEvent(toEventObject(event as EventObject, payload))
-        ),
+        event: stringify(event),
         sessionId: service.sessionId
       });
 
-      return originalSend(event, payload);
+      return originalSend(event);
     };
 
-    service.subscribe((state) => {
+    service.subscribe((snapshot) => {
       inspectService.send({
         type: 'service.state',
-        state: stringify(state),
+        state: stringify(snapshot),
         sessionId: service.sessionId
       });
     });
 
-    service.onStop(() => {
-      inspectService.send({
-        type: 'service.stop',
-        sessionId: service.sessionId
-      });
-    });
-
-    service.subscribe((state) => {
-      inspectService.send({
-        type: 'service.state',
-        state: JSON.stringify(state),
-        sessionId: service.sessionId
-      });
+    service.subscribe({
+      complete() {
+        inspectService.send({
+          type: 'service.stop',
+          sessionId: service.sessionId
+        });
+      }
     });
   });
 
   const inspector: Inspector = {
     name: '@@xstate/inspector',
-    send: (event) => {
+    send: (event: InspectMachineEvent) => {
       inspectService.send(event);
-    },
-    subscribe: () => {
-      return {
-        unsubscribe: () => void 0
-      };
     },
     disconnect: () => {
       server.close();
       inspectService.stop();
     },
-    getSnapshot: () => undefined
+    subscribe: () => ({
+      unsubscribe: () => {}
+    })
   };
 
   server.on('close', () => {
     inspectService.stop();
+    server.clients.forEach((client) => client.terminate());
   });
 
   return inspector;

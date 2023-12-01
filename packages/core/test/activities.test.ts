@@ -1,361 +1,441 @@
-import { stateIn } from '../src/guards';
-import { interpret, createMachine } from '../src/index';
-import { invokeActivity } from '../src/invoke';
+import { fromCallback } from '../src/actors/index.ts';
+import { createActor, createMachine, assign } from '../src/index.ts';
+import { setup } from '../src/setup.ts';
 
 // TODO: remove this file but before doing that ensure that things tested here are covered by other tests
 
-const lightMachine = createMachine({
-  key: 'light',
-  initial: 'green',
-  states: {
-    green: {
-      invoke: ['fadeInGreen'],
-      on: {
-        TIMER: 'yellow'
+describe('invocations (activities)', () => {
+  it('identifies initial root invocations', () => {
+    let active = false;
+    const machine = createMachine({
+      invoke: {
+        src: fromCallback(() => {
+          active = true;
+        })
       }
-    },
-    yellow: {
-      on: {
-        TIMER: 'red'
-      }
-    },
-    red: {
-      initial: 'walk',
-      invoke: ['activateCrosswalkLight'],
-      on: {
-        TIMER: 'green'
-      },
+    });
+    createActor(machine).start();
+
+    expect(active).toBe(true);
+  });
+
+  it('identifies initial invocations', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'a',
       states: {
-        walk: { on: { PED_WAIT: 'wait' } },
-        wait: {
-          invoke: ['blinkCrosswalkLight'],
-          on: { PED_STOP: 'stop' }
-        },
-        stop: {}
-      }
-    }
-  }
-});
-
-describe('activities with guarded transitions', () => {
-  it('should activate even if there are subsequent automatic, but blocked transitions', (done) => {
-    const machine = createMachine(
-      {
-        initial: 'A',
-        states: {
-          A: {
-            on: {
-              E: 'B'
-            }
-          },
-          B: {
-            invoke: ['B_ACTIVITY'],
-            always: [{ guard: () => false, target: 'A' }]
+        a: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+            })
           }
         }
-      },
-      {
-        actors: {
-          B_ACTIVITY: invokeActivity(() => {
-            done();
-          })
-        }
       }
-    );
+    });
+    createActor(machine).start();
 
-    const service = interpret(machine).start();
-
-    service.send('E');
-  });
-});
-
-describe('remembering activities', () => {
-  const machine = createMachine({
-    initial: 'A',
-    states: {
-      A: {
-        on: {
-          E: 'B'
-        }
-      },
-      B: {
-        invoke: 'B_ACTIVITY',
-        on: {
-          E: 'A'
-        }
-      }
-    }
+    expect(active).toBe(true);
   });
 
-  it('should remember the activities even after an event', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          B_ACTIVITY: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    ).start();
-
-    service.send('E');
-    service.send('IGNORE');
-  });
-});
-
-describe('activities', () => {
-  it('identifies initial activities', (done) => {
-    const service = interpret(
-      lightMachine.provide({
-        actors: {
-          fadeInGreen: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    );
-
-    service.start();
-  });
-  it('identifies start activities', (done) => {
-    const service = interpret(
-      lightMachine.provide({
-        actors: {
-          activateCrosswalkLight: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    );
-
-    service.start();
-    service.send('TIMER'); // yellow
-    service.send('TIMER'); // red
-  });
-
-  it('identifies start activities for child states and active activities', (done) => {
-    const service = interpret(
-      lightMachine.provide({
-        actors: {
-          blinkCrosswalkLight: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    );
-
-    service.start();
-    service.send('TIMER'); // yellow
-    service.send('TIMER'); // red.walk
-    service.send('PED_WAIT'); // red.wait
-  });
-
-  it('identifies stop activities for child states', (done) => {
-    const service = interpret(
-      lightMachine.provide({
-        actors: {
-          blinkCrosswalkLight: invokeActivity(() => {
-            return () => {
-              done();
-            };
-          })
-        }
-      })
-    );
-
-    service.start();
-    service.send('TIMER'); // yellow
-    service.send('TIMER'); // red.walk
-    service.send('PED_WAIT'); // red.wait
-    service.send('PED_STOP');
-  });
-
-  it('identifies multiple stop activities for child and parent states', (done) => {
-    let stopActivateCrosswalkLightcalled = false;
-
-    const service = interpret(
-      lightMachine.provide({
-        actors: {
-          fadeInGreen: invokeActivity(() => {
-            if (stopActivateCrosswalkLightcalled) {
-              done();
-            }
-          }),
-          activateCrosswalkLight: invokeActivity(() => {
-            return () => {
-              stopActivateCrosswalkLightcalled = true;
-            };
-          })
-        }
-      })
-    );
-
-    service.start();
-    service.send('TIMER'); // yellow
-    service.send('TIMER'); // red.walk
-    service.send('PED_WAIT'); // red.wait
-    service.send('PED_STOP'); // red.stop
-    service.send('TIMER'); // green
-  });
-});
-
-describe('transient activities', () => {
-  const machine = createMachine({
-    type: 'parallel',
-    states: {
-      A: {
-        invoke: ['A'],
-        initial: 'A1',
-        states: {
-          A1: {
-            invoke: ['A1'],
-            on: {
-              A: 'AWAIT'
-            }
-          },
-          AWAIT: {
-            id: 'AWAIT',
-            invoke: ['AWAIT'],
-            on: {
-              '': 'A2'
-            }
-          },
-          A2: {
-            invoke: ['A2'],
-            on: {
-              A: 'A1'
+  it('identifies initial deep invocations', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          initial: 'a1',
+          states: {
+            a1: {
+              invoke: {
+                src: fromCallback(() => {
+                  active = true;
+                })
+              }
             }
           }
-        },
-        on: {
-          A1: '.A1',
-          A2: '.A2'
         }
-      },
-      B: {
-        initial: 'B1',
-        invoke: ['B'],
-        states: {
-          B1: {
-            invoke: ['B1'],
-            always: {
-              target: 'B2',
-              guard: stateIn('#AWAIT')
+      }
+    });
+    createActor(machine).start();
+
+    expect(active).toBe(true);
+  });
+
+  it('identifies start invocations', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            TIMER: 'b'
+          }
+        },
+        b: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+            })
+          }
+        }
+      }
+    });
+
+    const service = createActor(machine).start();
+
+    service.send({ type: 'TIMER' });
+
+    expect(active).toBe(true);
+  });
+
+  it('identifies start invocations for child states and active invocations', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            TIMER: 'b'
+          }
+        },
+        b: {
+          initial: 'b1',
+          states: {
+            b1: {
+              on: {
+                TIMER: 'b2'
+              }
             },
-            on: {
-              B: 'B2'
+            b2: {
+              invoke: {
+                src: fromCallback(() => {
+                  active = true;
+                })
+              }
             }
-          },
-          B2: {
-            invoke: ['B2'],
-            on: {
-              B: 'B1'
-            }
-          }
-        },
-        on: {
-          B1: '.B1',
-          B2: '.B2'
-        }
-      },
-      C: {
-        initial: 'C1',
-        states: {
-          C1: {
-            invoke: ['C1'],
-            on: {
-              C: 'C1',
-              C_SIMILAR: 'C2'
-            }
-          },
-          C2: {
-            invoke: ['C1']
           }
         }
       }
-    }
-  });
-
-  it('should have started initial activities', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          A: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    );
+    });
+    const service = createActor(machine);
 
     service.start();
+    service.send({ type: 'TIMER' });
+    service.send({ type: 'TIMER' });
+
+    expect(active).toBe(true);
   });
 
-  it('should have started deep initial activities', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          A1: invokeActivity(() => {
-            done();
-          })
+  it('identifies stop invocations for child states', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            TIMER: 'b'
+          }
+        },
+        b: {
+          initial: 'b1',
+          states: {
+            b1: {
+              on: {
+                TIMER: 'b2'
+              }
+            },
+            b2: {
+              invoke: {
+                src: fromCallback(() => {
+                  active = true;
+                  return () => (active = false);
+                })
+              },
+              on: {
+                TIMER: 'b3'
+              }
+            },
+            b3: {}
+          }
         }
-      })
-    );
+      }
+    });
+    const service = createActor(machine).start();
+
+    service.send({ type: 'TIMER' });
+    service.send({ type: 'TIMER' });
+    service.send({ type: 'TIMER' });
+
+    expect(active).toBe(false);
+  });
+
+  it('identifies multiple stop invocations for child and parent states', () => {
+    let active1 = false;
+    let active2 = false;
+
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            TIMER: 'b'
+          }
+        },
+        b: {
+          initial: 'b1',
+          invoke: {
+            src: fromCallback(() => {
+              active1 = true;
+              return () => (active1 = false);
+            })
+          },
+          states: {
+            b1: {
+              invoke: {
+                src: fromCallback(() => {
+                  active2 = true;
+                  return () => (active2 = false);
+                })
+              }
+            }
+          },
+          on: {
+            TIMER: 'a'
+          }
+        }
+      }
+    });
+    const service = createActor(machine);
+
     service.start();
+    service.send({ type: 'TIMER' });
+    service.send({ type: 'TIMER' });
+
+    expect(active1).toBe(false);
+    expect(active2).toBe(false);
   });
 
-  it('should have kept existing activities', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          A: invokeActivity(() => {
-            done();
-          })
+  it('should activate even if there are subsequent always but blocked transition', () => {
+    let active = false;
+    const machine = createMachine({
+      initial: 'A',
+      states: {
+        A: {
+          on: {
+            E: 'B'
+          }
+        },
+        B: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+              return () => (active = false);
+            })
+          },
+          always: [{ guard: () => false, target: 'A' }]
         }
-      })
-    ).start();
+      }
+    });
 
-    service.send('A');
+    const service = createActor(machine).start();
+
+    service.send({ type: 'E' });
+
+    expect(active).toBe(true);
   });
 
-  it('should have kept same activities', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          C1: invokeActivity(() => {
-            done();
-          })
+  it('should remember the invocations even after an ignored event', () => {
+    let cleanupSpy = jest.fn();
+    let active = false;
+    const machine = createMachine({
+      initial: 'A',
+      states: {
+        A: {
+          on: {
+            E: 'B'
+          }
+        },
+        B: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+              return () => {
+                active = false;
+                cleanupSpy();
+              };
+            })
+          }
         }
-      })
-    ).start();
+      }
+    });
+    const service = createActor(machine).start();
 
-    service.send('C_SIMILAR');
+    service.send({ type: 'E' });
+    service.send({ type: 'IGNORE' });
+
+    expect(active).toBe(true);
+    expect(cleanupSpy).not.toBeCalled();
   });
 
-  it('should have kept same activities after self transition', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          C1: invokeActivity(() => {
-            done();
-          })
+  it('should remember the invocations when transitioning within the invoking state', () => {
+    let cleanupSpy = jest.fn();
+    let active = false;
+    const machine = createMachine({
+      initial: 'A',
+      states: {
+        A: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+              return () => {
+                active = false;
+                cleanupSpy();
+              };
+            })
+          },
+          initial: 'A1',
+          states: {
+            A1: {
+              on: {
+                E: 'A2'
+              }
+            },
+            A2: {}
+          }
         }
-      })
-    ).start();
+      }
+    });
+    const service = createActor(machine).start();
 
-    service.send('C');
+    service.send({ type: 'E' });
+
+    expect(active).toBe(true);
+    expect(cleanupSpy).not.toBeCalled();
   });
 
-  it('should have stopped after automatic transitions', (done) => {
-    const service = interpret(
-      machine.provide({
-        actors: {
-          B2: invokeActivity(() => {
-            done();
-          })
-        }
-      })
-    ).start();
+  it('should start a new actor when leaving an invoking state and entering a new one that invokes the same actor type', () => {
+    let counter = 0;
+    const actual: string[] = [];
 
-    service.send('A');
+    const fooActor = fromCallback(() => {
+      let localId = counter;
+      counter++;
+
+      actual.push(`start ${localId}`);
+
+      return () => {
+        actual.push(`stop ${localId}`);
+      };
+    });
+
+    const machine = setup({
+      actors: {
+        fooActor
+      }
+    }).createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          invoke: {
+            src: 'fooActor'
+          },
+          on: {
+            NEXT: 'b'
+          }
+        },
+        b: {
+          invoke: {
+            src: 'fooActor'
+          }
+        }
+      }
+    });
+    const service = createActor(machine).start();
+
+    service.send({ type: 'NEXT' });
+
+    expect(actual).toEqual(['start 0', 'stop 0', 'start 1']);
+  });
+
+  it('should start a new actor when reentering the invoking state during a reentering self transition', () => {
+    let counter = 0;
+    const actual: string[] = [];
+
+    const fooActor = fromCallback(() => {
+      let localId = counter;
+      counter++;
+
+      actual.push(`start ${localId}`);
+
+      return () => {
+        actual.push(`stop ${localId}`);
+      };
+    });
+
+    const machine = setup({
+      actors: {
+        fooActor
+      }
+    }).createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          invoke: {
+            src: 'fooActor'
+          },
+          on: {
+            NEXT: {
+              target: 'a',
+              reenter: true
+            }
+          }
+        }
+      }
+    });
+    const service = createActor(machine).start();
+
+    service.send({ type: 'NEXT' });
+
+    expect(actual).toEqual(['start 0', 'stop 0', 'start 1']);
+  });
+
+  it('should have stopped after automatic transitions', () => {
+    let active = false;
+    const machine = createMachine({
+      context: {
+        counter: 0
+      },
+      initial: 'a',
+      states: {
+        a: {
+          invoke: {
+            src: fromCallback(() => {
+              active = true;
+              return () => (active = false);
+            })
+          },
+          always: {
+            guard: ({ context }) => context.counter !== 0,
+            target: 'b'
+          },
+          on: {
+            INC: {
+              actions: assign(({ context }) => ({
+                counter: context.counter + 1
+              }))
+            }
+          }
+        },
+        b: {}
+      }
+    });
+    const service = createActor(machine).start();
+
+    expect(active).toBe(true);
+
+    service.send({ type: 'INC' });
+
+    expect(active).toBe(false);
   });
 });

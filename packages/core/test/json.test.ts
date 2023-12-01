@@ -12,17 +12,18 @@ describe('json', () => {
       [key: string]: any;
     }
 
-    const machine = createMachine<Context>({
+    const machine = createMachine({
+      types: {} as { context: Context },
       initial: 'foo',
       version: '1.0.0',
       context: {
         number: 0,
         string: 'hello'
       },
-      invoke: [{ id: 'invokeId', src: 'invokeSrc', autoForward: true }],
+      invoke: [{ id: 'invokeId', src: 'invokeSrc' }],
       states: {
         testActions: {
-          invoke: [{ id: 'invokeId', src: 'invokeSrc', autoForward: true }],
+          invoke: [{ id: 'invokeId', src: 'invokeSrc' }],
           entry: [
             'stringActionType',
             {
@@ -51,7 +52,7 @@ describe('json', () => {
           on: {
             TO_FOO: {
               target: ['foo', 'bar'],
-              guard: (ctx) => !!ctx.string
+              guard: ({ context }) => !!context.string
             }
           },
           after: {
@@ -66,7 +67,7 @@ describe('json', () => {
         },
         testFinal: {
           type: 'final',
-          data: {
+          output: {
             something: 'else'
           }
         },
@@ -87,14 +88,15 @@ describe('json', () => {
             }
           }
         }
-      }
+      },
+      output: { result: 42 }
     });
 
     const json = JSON.parse(JSON.stringify(machine.definition));
 
     try {
       validate(json);
-    } catch (err) {
+    } catch (err: any) {
       throw new Error(JSON.stringify(JSON.parse(err.message), null, 2));
     }
 
@@ -139,11 +141,52 @@ describe('json', () => {
 
     const revivedMachine = createMachine(machineObject);
 
+    expect([...revivedMachine.states.active.transitions.values()].flat())
+      .toMatchInlineSnapshot(`
+      [
+        {
+          "actions": [],
+          "eventType": "EVENT",
+          "guard": undefined,
+          "reenter": false,
+          "source": "#active",
+          "target": [
+            "#(machine).foo",
+          ],
+          "toJSON": [Function],
+        },
+        {
+          "actions": [],
+          "eventType": "xstate.done.actor.0.active",
+          "guard": undefined,
+          "reenter": false,
+          "source": "#active",
+          "target": [
+            "#(machine).foo",
+          ],
+          "toJSON": [Function],
+        },
+        {
+          "actions": [],
+          "eventType": "xstate.error.actor.0.active",
+          "guard": undefined,
+          "reenter": false,
+          "source": "#active",
+          "target": [
+            "#(machine).bar",
+          ],
+          "toJSON": [Function],
+        },
+      ]
+    `);
+
     // 1. onDone
     // 2. onError
     // 3. EVENT
-    expect(revivedMachine.getStateNodeById('active').transitions.length).toBe(
-      3
-    );
+    expect(
+      [
+        ...revivedMachine.getStateNodeById('active').transitions.values()
+      ].flatMap((t) => t).length
+    ).toBe(3);
   });
 });

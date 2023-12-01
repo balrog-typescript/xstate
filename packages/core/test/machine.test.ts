@@ -1,5 +1,4 @@
-import { interpret, createMachine, assign } from '../src/index';
-import { State } from '../src/State';
+import { createActor, createMachine, assign } from '../src/index.ts';
 
 const pedestrianStates = {
   initial: 'walk',
@@ -19,7 +18,6 @@ const pedestrianStates = {
 };
 
 const lightMachine = createMachine({
-  key: 'light',
   initial: 'green',
   states: {
     green: {
@@ -45,38 +43,6 @@ const lightMachine = createMachine({
   }
 });
 
-const configMachine = createMachine(
-  {
-    id: 'config',
-    initial: 'foo',
-    context: {
-      foo: 'bar'
-    },
-    states: {
-      foo: {
-        entry: 'entryAction',
-        on: {
-          EVENT: {
-            target: 'bar',
-            guard: 'someCondition'
-          }
-        }
-      },
-      bar: {}
-    }
-  },
-  {
-    actions: {
-      entryAction: () => {
-        throw new Error('original entry');
-      }
-    },
-    guards: {
-      someCondition: () => false
-    }
-  }
-);
-
 describe('machine', () => {
   describe('machine.states', () => {
     it('should properly register machine states', () => {
@@ -95,24 +61,6 @@ describe('machine', () => {
         'POWER_OUTAGE',
         'PED_COUNTDOWN'
       ]);
-    });
-  });
-
-  describe('machine.initialState', () => {
-    it('should return a State instance', () => {
-      expect(lightMachine.initialState).toBeInstanceOf(State);
-    });
-
-    it('should return the initial state', () => {
-      expect(lightMachine.initialState.value).toEqual('green');
-    });
-  });
-
-  describe('machine.history', () => {
-    it('should not retain previous history', () => {
-      const next = lightMachine.transition(lightMachine.initialState, 'TIMER');
-      const following = lightMachine.transition(next, 'TIMER');
-      expect(following!.history!.history).not.toBeDefined();
     });
   });
 
@@ -147,33 +95,72 @@ describe('machine', () => {
   });
 
   describe('machine.provide', () => {
-    it('should override guards and actions', () => {
-      const differentMachine = configMachine.provide({
-        actions: {
-          entryAction: () => {
-            throw new Error('new entry');
-          }
+    it('should override an action', () => {
+      const originalEntry = jest.fn();
+      const overridenEntry = jest.fn();
+
+      const machine = createMachine(
+        {
+          entry: 'entryAction'
         },
-        guards: { someCondition: () => true }
+        {
+          actions: {
+            entryAction: originalEntry
+          }
+        }
+      );
+      const differentMachine = machine.provide({
+        actions: {
+          entryAction: overridenEntry
+        }
       });
 
-      expect(differentMachine.context).toEqual({ foo: 'bar' });
+      createActor(differentMachine).start();
 
-      const service = interpret(differentMachine);
+      expect(originalEntry).toHaveBeenCalledTimes(0);
+      expect(overridenEntry).toHaveBeenCalledTimes(1);
+    });
 
-      expect(() => service.start()).toThrowErrorMatchingInlineSnapshot(
-        `"new entry"`
+    it('should override a guard', () => {
+      const originalGuard = jest.fn().mockImplementation(() => true);
+      const overridenGuard = jest.fn().mockImplementation(() => true);
+
+      const machine = createMachine(
+        {
+          on: {
+            EVENT: {
+              guard: 'someCondition',
+              actions: () => {}
+            }
+          }
+        },
+        {
+          guards: {
+            someCondition: originalGuard
+          }
+        }
       );
 
-      expect(differentMachine.transition('foo', 'EVENT').value).toEqual('bar');
+      const differentMachine = machine.provide({
+        guards: { someCondition: overridenGuard }
+      });
+
+      const actorRef = createActor(differentMachine).start();
+      actorRef.send({ type: 'EVENT' });
+
+      expect(originalGuard).toHaveBeenCalledTimes(0);
+      expect(overridenGuard).toHaveBeenCalledTimes(1);
     });
 
     it('should not override context if not defined', () => {
-      const differentMachine = configMachine.provide({});
-
-      expect(differentMachine.initialState.context).toEqual(
-        configMachine.context
-      );
+      const machine = createMachine({
+        context: {
+          foo: 'bar'
+        }
+      });
+      const differentMachine = machine.provide({});
+      const actorRef = createActor(differentMachine).start();
+      expect(actorRef.getSnapshot().context).toEqual({ foo: 'bar' });
     });
 
     it.skip('should override context (second argument)', () => {
@@ -204,108 +191,56 @@ describe('machine', () => {
     });
 
     it('machines defined without context should have a default empty object for context', () => {
-      const machine = createMachine({});
-
-      expect(machine.initialState.context).toEqual({});
-    });
-
-    it('should allow for lazy context to be used with `provide`', () => {
-      const machine = createMachine({
-        context: { foo: { prop: 'bar' } }
-      });
-      const copiedMachine = machine.provide({
-        context: () => ({ foo: { prop: 'baz' } })
-      });
-      expect(copiedMachine.initialState.context).toEqual({
-        foo: { prop: 'baz' }
-      });
+      expect(createActor(createMachine({})).getSnapshot().context).toEqual({});
     });
 
     it('should lazily create context for all interpreter instances created from the same machine template created by `provide`', () => {
       const machine = createMachine({
-        context: { foo: { prop: 'bar' } }
+        types: {} as { context: { foo: { prop: string } } },
+        context: () => ({
+          foo: { prop: 'baz' }
+        })
       });
 
-      const copiedMachine = machine.provide({
-        context: () => ({ foo: { prop: 'baz' } })
-      });
+      const copiedMachine = machine.provide({});
 
-      const a = interpret(copiedMachine).start();
-      const b = interpret(copiedMachine).start();
+      const a = createActor(copiedMachine).start();
+      const b = createActor(copiedMachine).start();
 
-      expect(a.state.context.foo).not.toBe(b.state.context.foo);
-    });
-  });
-
-  describe('machine.withContext', () => {
-    it('should partially override context', () => {
-      const fooBarMachine = createMachine({
-        initial: 'active',
-        context: {
-          foo: 1,
-          bar: 2
-        },
-        states: {
-          active: {}
-        }
-      });
-
-      const changedBarMachine = fooBarMachine.withContext({
-        bar: 42
-      });
-
-      expect(changedBarMachine.initialState.context).toEqual({
-        foo: 1,
-        bar: 42
-      });
-    });
-
-    it('should override undefined context', () => {
-      const fooBarMachine = createMachine({
-        initial: 'active',
-        states: {
-          active: {}
-        }
-      });
-
-      const changedBarMachine = fooBarMachine.withContext({
-        bar: 42
-      });
-
-      expect(changedBarMachine.initialState.context).toEqual({ bar: 42 });
+      expect(a.getSnapshot().context.foo).not.toBe(b.getSnapshot().context.foo);
     });
   });
 
   describe('machine function context', () => {
-    const testMachineConfig = {
-      initial: 'active',
-      context: () => ({
-        foo: { bar: 'baz' }
-      }),
-      states: {
-        active: {}
-      }
-    };
+    it('context from a function should be lazily evaluated', () => {
+      const config = {
+        initial: 'active',
+        context: () => ({
+          foo: { bar: 'baz' }
+        }),
+        states: {
+          active: {}
+        }
+      };
+      const testMachine1 = createMachine(config);
+      const testMachine2 = createMachine(config);
 
-    it.skip('context from a function should be lazily evaluated', () => {
-      const testMachine1 = createMachine(testMachineConfig);
-      const testMachine2 = createMachine(testMachineConfig);
+      const initialState1 = createActor(testMachine1).getSnapshot();
+      const initialState2 = createActor(testMachine2).getSnapshot();
 
-      expect(testMachine1.initialState.context).not.toBe(
-        testMachine2.initialState.context
-      );
+      expect(initialState1.context).not.toBe(initialState2.context);
 
-      expect(testMachine1.initialState.context).toEqual({
+      expect(initialState1.context).toEqual({
         foo: { bar: 'baz' }
       });
 
-      expect(testMachine2.initialState.context).toEqual({
+      expect(initialState2.context).toEqual({
         foo: { bar: 'baz' }
       });
     });
   });
 
-  describe('machine.resolveState()', () => {
+  describe('machine.resolveStateValue()', () => {
     const resolveMachine = createMachine({
       id: 'resolve',
       initial: 'foo',
@@ -346,24 +281,14 @@ describe('machine', () => {
     });
 
     it('should resolve the state value', () => {
-      const tempState = State.from('foo');
-
-      const resolvedState = resolveMachine.resolveState(tempState);
+      const resolvedState = resolveMachine.resolveState({ value: 'foo' });
 
       expect(resolvedState.value).toEqual({
         foo: { one: { a: 'aa', b: 'bb' } }
       });
     });
 
-    it('should resolve the state configuration (implicit via events)', () => {
-      const tempState = State.from('foo');
-
-      const resolvedState = resolveMachine.resolveState(tempState);
-
-      expect(resolvedState.nextEvents.sort()).toEqual(['TO_BAR', 'TO_TWO']);
-    });
-
-    it('should resolve .done', () => {
+    it('should resolve `status: done`', () => {
       const machine = createMachine({
         initial: 'foo',
         states: {
@@ -375,11 +300,26 @@ describe('machine', () => {
           }
         }
       });
-      const tempState = State.from('bar');
 
-      const resolvedState = machine.resolveState(tempState);
+      const resolvedState = machine.resolveState({ value: 'bar' });
 
-      expect(resolvedState.done).toBe(true);
+      expect(resolvedState.status).toBe('done');
+    });
+  });
+
+  describe('initial state', () => {
+    it('should follow always transition', () => {
+      const machine = createMachine({
+        initial: 'a',
+        states: {
+          a: {
+            always: [{ target: 'b' }]
+          },
+          b: {}
+        }
+      });
+
+      expect(createActor(machine).getSnapshot().value).toBe('b');
     });
   });
 
@@ -403,7 +343,7 @@ describe('machine', () => {
         states: { idle: {} }
       });
 
-      expect(idMachine.key).toEqual('some-id');
+      expect(idMachine.id).toEqual('some-id');
     });
 
     it('should represent the ID (state node)', () => {
@@ -420,16 +360,6 @@ describe('machine', () => {
       expect(idMachine.states.idle.id).toEqual('idle');
     });
 
-    it('should use the key as the ID if no ID is provided', () => {
-      const noIDMachine = createMachine({
-        key: 'some-key',
-        initial: 'idle',
-        states: { idle: {} }
-      });
-
-      expect(noIDMachine.key).toEqual('some-key');
-    });
-
     it('should use the key as the ID if no ID is provided (state node)', () => {
       const noStateNodeIDMachine = createMachine({
         id: 'some-id',
@@ -443,22 +373,23 @@ describe('machine', () => {
 
   describe('combinatorial machines', () => {
     it('should support combinatorial machines (single-state)', () => {
-      const testMachine = createMachine<{ value: number }>({
+      const testMachine = createMachine({
+        types: {} as { context: { value: number } },
         context: { value: 42 },
         on: {
           INC: {
-            actions: assign({ value: (ctx) => ctx.value + 1 })
+            actions: assign({ value: ({ context }) => context.value + 1 })
           }
         }
       });
 
-      const state = testMachine.initialState;
+      const actorRef = createActor(testMachine);
+      expect(actorRef.getSnapshot().value).toEqual({});
 
-      expect(state.value).toEqual({});
+      actorRef.start();
+      actorRef.send({ type: 'INC' });
 
-      const nextState = testMachine.transition(state, 'INC');
-
-      expect(nextState.context.value).toEqual(43);
+      expect(actorRef.getSnapshot().context.value).toEqual(43);
     });
   });
 });
@@ -469,7 +400,7 @@ describe('StateNode', () => {
 
     const transitions = greenNode.transitions;
 
-    expect(transitions.map((t) => t.eventType)).toEqual([
+    expect([...transitions.keys()]).toEqual([
       'TIMER',
       'POWER_OUTAGE',
       'FORBIDDEN_EVENT'

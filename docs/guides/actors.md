@@ -1,5 +1,9 @@
 # Actors <Badge text="4.6+"/>
 
+:::tip Check out our new docs!
+🆕 Find our [actors in XState explainer](https://stately.ai/docs/actors) in our new docs, along with a [no-code introduction to actors in statecharts and the Stately Studio](https://stately.ai/docs/actors#using-actors-in-stately-studio).
+:::
+
 [:rocket: Quick Reference](#quick-reference)
 
 [[toc]]
@@ -73,7 +77,7 @@ Alternatively `spawn` accepts an options object as the second argument which may
 
 - `name` (optional) - a string uniquely identifying the actor. This should be unique for all spawned actors and invoked services.
 - `autoForward` - (optional) `true` if all events sent to this machine should also be sent (or _forwarded_) to the invoked child (`false` by default)
-- `sync` - (optional) `true` if this machine should be automatically subscribed to the spawned child machine's state, the state will be stored as `.state` on the child machine ref
+- `sync` - (optional) `true` if this machine should be automatically subscribed to the spawned child machine's state, the state can be retrieved from `.getSnapshot()` on the child machine ref
 
 ```js {13-14}
 import { createMachine, spawn } from 'xstate';
@@ -100,6 +104,7 @@ const todosMachine = createMachine({
 ```
 
 If you do not provide a `name` argument to `spawn(...)`, a unique name will be automatically generated. This name will be nondeterministic :warning:.
+A *named actor* is easier to be referenced in other API calls, see [Sending Events to Actors](#sending-events-to-actors).
 
 ::: tip
 Treat `const actorRef = spawn(someMachine)` as just a normal value in `context`. You can place this `actorRef` anywhere within `context`, based on your logic requirements. As long as it's within an assignment function in `assign(...)`, it will be scoped to the service from where it was spawned.
@@ -164,7 +169,7 @@ const machine = createMachine({
 ::: tip
 If you provide an unique `name` argument to `spawn(...)`, you can reference it in the target expression:
 
-```js
+```js {4, 10}
 const loginMachine = createMachine({
   // ...
   entry: assign({
@@ -202,14 +207,12 @@ const someMachine = createMachine({
 
 ## Spawning Promises
 
-Just like [invoking promises](./communication.md#invoking-promises), promises can be spawned as actors. The event sent back to the machine will be a `'done.invoke.<ID>'` action with the promise response as the `data` property in the payload:
+Just like [invoking promises](./communication.md#invoking-promises), promises can be spawned as actors. The event sent back to the machine will be a `'xstate.done.actor.<ID>'` action with the promise response as the `data` property in the payload:
 
 ```js {11}
 // Returns a promise
 const fetchData = (query) => {
-  return fetch(`http://example.com?query=${event.query}`).then((data) =>
-    data.json()
-  );
+  return fetch(`http://example.com?query=${query}`).then((data) => data.json());
 };
 
 // ...
@@ -222,7 +225,7 @@ const fetchData = (query) => {
 ```
 
 ::: warning
-It is not recommended to spawn promise actors, as [invoking promises](./communication.md#invoking-promises) is a better pattern for this, since they are dependent on state (self-cancelling) and have more predictable behavior.
+It is not recommended to spawn promise actors, as [invoking promises](./communication.md#invoking-promises) is a better pattern for this, since they are dependent on state (self-cancelling upon state change) and have more predictable behavior.
 :::
 
 ## Spawning Callbacks
@@ -315,7 +318,7 @@ const remoteMachine = createMachine({
     online: {
       after: {
         1000: {
-          actions: sendParent('REMOTE.ONLINE')
+          actions: sendParent({ type: 'REMOTE.ONLINE' })
         }
       }
     }
@@ -385,20 +388,8 @@ someService.onTransition((state) => {
 });
 ```
 
-```js
-someService.onTransition((state) => {
-  const { someRef } = state.context;
-
-  console.log(someRef.state);
-  // => State {
-  //   value: ...,
-  //   context: ...
-  // }
-});
-```
-
 ::: warning
-By default, `sync` is set to `false`. Never read an actor's `.state` when `sync` is disabled; otherwise, you will end up referencing stale state.
+By default, `sync` is set to `false`. Never read an actor's state from `.getSnapshot()` when `sync` is disabled; otherwise, you will end up referencing stale state.
 :::
 
 ## Sending Updates <Badge text="4.7+" />

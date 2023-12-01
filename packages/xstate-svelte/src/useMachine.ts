@@ -1,74 +1,21 @@
-import { readable } from 'svelte/store';
 import {
-  interpret,
-  EventObject,
-  MachineNode,
-  InterpreterOptions,
-  MachineImplementations,
-  StateConfig,
-  Typestate
+  AnyStateMachine,
+  AreAllImplementationsAssumedToBeProvided,
+  ActorOptions
 } from 'xstate';
+import { useActor } from './useActor';
 
-interface UseMachineOptions<
-  TContext extends object,
-  TEvent extends EventObject
-> {
-  /**
-   * If provided, will be merged with machine's `context`.
-   */
-  context: Partial<TContext>;
-  /**
-   * The state to rehydrate the machine to. The machine will
-   * start at this state instead of its `initialState`.
-   */
-  state: StateConfig<TContext, TEvent>;
-}
+type RestParams<TMachine extends AnyStateMachine> =
+  AreAllImplementationsAssumedToBeProvided<
+    TMachine['__TResolvedTypesMeta']
+  > extends false
+    ? [options: ActorOptions<TMachine>]
+    : [options?: ActorOptions<TMachine>];
 
-export function useMachine<
-  TContext extends object,
-  TEvent extends EventObject,
-  TTypestate extends Typestate<TContext>
->(
-  machine: MachineNode<TContext, TEvent, TTypestate>,
-  options: Partial<InterpreterOptions> &
-    Partial<UseMachineOptions<TContext, TEvent>> &
-    Partial<MachineImplementations<TContext, TEvent>> = {}
+/** @deprecated */
+export function useMachine<TMachine extends AnyStateMachine>(
+  machine: TMachine,
+  ...[options = {}]: RestParams<TMachine>
 ) {
-  const {
-    context,
-    guards,
-    actions,
-    actors,
-    delays,
-    state: rehydratedState,
-    ...interpreterOptions
-  } = options;
-
-  const machineConfig = {
-    context,
-    guards,
-    actions,
-    actors,
-    delays
-  };
-
-  const resolvedMachine = machine.provide(machineConfig);
-
-  const service = interpret(resolvedMachine, interpreterOptions).start(
-    rehydratedState ? machine.createState(rehydratedState) : undefined
-  );
-
-  const state = readable(service.state, (set) => {
-    service.subscribe((state) => {
-      if (state.changed) {
-        set(state);
-      }
-    });
-
-    return () => {
-      service.stop();
-    };
-  });
-
-  return { state, send: service.send, service };
+  return useActor(machine, options);
 }

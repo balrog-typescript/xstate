@@ -7,7 +7,7 @@ This package contains utilities for using [XState](https://github.com/statelyai/
 
 ## :warning: Vue 2 Notice:
 
-If you're using Vue 2.x, please see [the Vue recipe](../../recipes/vue.html) instead, or use the [`xstate-vue2` package](https://github.com/ChrisShank/xstate-vue2) if you want to use the Vue Composition API.
+If you're using Vue 2.x, please see [the Vue recipe](https://xstate.js.org/docs/recipes/vue.html) instead, or use the [`xstate-vue2` package](https://github.com/ChrisShank/xstate-vue2) if you want to use the Vue Composition API.
 
 ## Quick start
 
@@ -25,28 +25,10 @@ npm i xstate @xstate/vue
 
 By using the global variable `XStateVue`
 
-or
-
-```html
-<script src="https://unpkg.com/@xstate/vue/dist/xstate-vue.fsm.min.js"></script>
-```
-
-By using the global variable `XStateVueFSM`
-
 2. Import the `useMachine` composition function:
 
 ```vue
-<template>
-  <button @click="send('TOGGLE')">
-    {{
-      state.value === 'inactive'
-        ? 'Click to activate'
-        : 'Active! Click to deactivate'
-    }}
-  </button>
-</template>
-
-<script>
+<script setup>
 import { useMachine } from '@xstate/vue';
 import { createMachine } from 'xstate';
 
@@ -63,14 +45,16 @@ const toggleMachine = createMachine({
   }
 });
 
-export default {
-  setup() {
-    const { state, send } = useMachine(toggleMachine);
-    return {
-      state,
-      send
-    };
-  }
-};
+const { state, send } = useMachine(toggleMachine);
 </script>
+
+<template>
+  <button @click="send('TOGGLE')">
+    {{
+      state.value === 'inactive'
+        ? 'Click to activate'
+        : 'Active! Click to deactivate'
+    }}
+  </button>
+</template>
 ```

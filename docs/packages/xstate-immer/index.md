@@ -1,5 +1,11 @@
 # @xstate/immer
 
+:::warning These XState v4 docs are no longer maintained
+
+XState v5 is out now! [Read more about XState v5](https://stately.ai/blog/2023-12-01-xstate-v5) and [check out the XState v5 docs](https://stately.ai/docs/xstate).
+
+:::
+
 <p align="center">
   <a href="https://xstate.js.org">
   <br />
@@ -87,13 +93,13 @@ const toggleService = interpret(toggleMachine)
   })
   .start();
 
-toggleService.send('TOGGLE');
+toggleService.send({ type: 'TOGGLE' });
 // { count: 1, level: 0 }
 
 toggleService.send(levelUpdater.update(9));
 // { count: 1, level: 9 }
 
-toggleService.send('TOGGLE');
+toggleService.send({ type: 'TOGGLE' });
 // { count: 2, level: 9 }
 
 toggleService.send(levelUpdater.update(-100));

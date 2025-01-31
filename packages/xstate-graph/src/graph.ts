@@ -1,39 +1,28 @@
-import type {
-  Event,
+import {
   EventObject,
   AnyStateMachine,
-  AnyState,
-  StateFrom,
-  EventFrom
+  StateMachine,
+  AnyActorLogic,
+  EventFromLogic,
+  Snapshot,
+  __unsafe_getAllOwnEventDescriptors,
+  InputFrom
 } from 'xstate';
 import type {
   SerializedEvent,
-  SerializedState,
-  SimpleBehavior,
+  SerializedSnapshot,
   StatePath,
   DirectedGraphEdge,
   DirectedGraphNode,
   TraversalOptions,
   AnyStateNode,
   TraversalConfig
-} from './types';
-
-function flatten<T>(array: Array<T | T[]>): T[] {
-  return ([] as T[]).concat(...array);
-}
-
-export function toEventObject<TEvent extends EventObject>(
-  event: Event<TEvent>
-): TEvent {
-  if (typeof event === 'string' || typeof event === 'number') {
-    return { type: event } as unknown as TEvent;
-  }
-
-  return event;
-}
+} from './types.ts';
+import { createMockActorScope } from './actorScope.ts';
 
 /**
  * Returns all state nodes of the given `node`.
+ *
  * @param stateNode State node to recursively get child state nodes from
  */
 export function getStateNodes(
@@ -51,7 +40,7 @@ export function getStateNodes(
   return nodes;
 }
 
-export function getChildren(stateNode: AnyStateNode): AnyStateNode[] {
+function getChildren(stateNode: AnyStateNode): AnyStateNode[] {
   if (!stateNode.states) {
     return [];
   }
@@ -63,9 +52,12 @@ export function getChildren(stateNode: AnyStateNode): AnyStateNode[] {
   return children;
 }
 
-export function serializeMachineState(state: AnyState): SerializedState {
-  const { value, context } = state;
-  return JSON.stringify({ value, context }) as SerializedState;
+export function serializeSnapshot(snapshot: Snapshot<any>): SerializedSnapshot {
+  const { value, context } = snapshot as any;
+  return JSON.stringify({
+    value,
+    context: Object.keys(context ?? {}).length ? context : undefined
+  }) as SerializedSnapshot;
 }
 
 export function serializeEvent<TEvent extends EventObject>(
@@ -76,40 +68,46 @@ export function serializeEvent<TEvent extends EventObject>(
 
 export function createDefaultMachineOptions<TMachine extends AnyStateMachine>(
   machine: TMachine,
-  options?: TraversalOptions<StateFrom<TMachine>, EventFrom<TMachine>>
-): TraversalOptions<StateFrom<TMachine>, EventFrom<TMachine>> {
+  options?: TraversalOptions<
+    ReturnType<TMachine['transition']>,
+    EventFromLogic<TMachine>,
+    InputFrom<TMachine>
+  >
+): TraversalOptions<
+  ReturnType<TMachine['transition']>,
+  EventFromLogic<TMachine>,
+  InputFrom<TMachine>
+> {
   const { events: getEvents, ...otherOptions } = options ?? {};
   const traversalOptions: TraversalOptions<
-    StateFrom<TMachine>,
-    EventFrom<TMachine>
+    ReturnType<TMachine['transition']>,
+    EventFromLogic<TMachine>,
+    InputFrom<TMachine>
   > = {
-    serializeState: serializeMachineState,
+    serializeState: serializeSnapshot,
     serializeEvent,
     events: (state) => {
       const events =
-        typeof getEvents === 'function' ? getEvents(state) : getEvents ?? [];
-      return flatten(
-        state.nextEvents.map((type) => {
-          const matchingEvents = events.filter(
-            (ev) => (ev as any).type === type
-          );
-          if (matchingEvents.length) {
-            return matchingEvents;
-          }
-          return [{ type }];
-        })
-      ) as any[];
+        typeof getEvents === 'function' ? getEvents(state) : (getEvents ?? []);
+      return __unsafe_getAllOwnEventDescriptors(state).flatMap((type) => {
+        const matchingEvents = events.filter((ev) => (ev as any).type === type);
+        if (matchingEvents.length) {
+          return matchingEvents;
+        }
+        return [{ type }];
+      }) as any[];
     },
-    fromState: machine.initialState as StateFrom<TMachine>,
+    fromState: machine.getInitialSnapshot(
+      createMockActorScope(),
+      options?.input
+    ) as ReturnType<TMachine['transition']>,
     ...otherOptions
   };
 
   return traversalOptions;
 }
 
-export function createDefaultBehaviorOptions<
-  TBehavior extends SimpleBehavior<any, any>
->(_behavior: TBehavior): TraversalOptions<any, any> {
+export function createDefaultLogicOptions(): TraversalOptions<any, any, any> {
   return {
     serializeState: (state) => JSON.stringify(state),
     serializeEvent
@@ -117,16 +115,20 @@ export function createDefaultBehaviorOptions<
 }
 
 export function toDirectedGraph(
-  stateNode: AnyStateNode | AnyStateMachine
+  stateMachine: AnyStateNode | AnyStateMachine
 ): DirectedGraphNode {
-  const edges: DirectedGraphEdge[] = flatten(
-    stateNode.transitions.map((t, transitionIndex) => {
+  const stateNode =
+    stateMachine instanceof StateMachine ? stateMachine.root : stateMachine; // TODO: accept only machines
+
+  const edges: DirectedGraphEdge[] = [...stateNode.transitions.values()]
+    .flat()
+    .flatMap((t, transitionIndex) => {
       const targets = t.target ? t.target : [stateNode];
 
       return targets.map((target, targetIndex) => {
         const edge: DirectedGraphEdge = {
           id: `${stateNode.id}:${transitionIndex}:${targetIndex}`,
-          source: stateNode as AnyStateNode,
+          source: stateNode,
           target: target as AnyStateNode,
           transition: t,
           label: {
@@ -142,13 +144,12 @@ export function toDirectedGraph(
 
         return edge;
       });
-    })
-  );
+    });
 
   const graph = {
     id: stateNode.id,
-    stateNode: stateNode as AnyStateNode,
-    children: getChildren(stateNode as AnyStateNode).map(toDirectedGraph),
+    stateNode: stateNode,
+    children: getChildren(stateNode).map(toDirectedGraph),
     edges,
     toJSON: () => {
       const { id, children, edges: graphEdges } = graph;
@@ -170,48 +171,79 @@ export interface AdjacencyValue<TState, TEvent> {
 }
 
 export interface AdjacencyMap<TState, TEvent> {
-  [key: SerializedState]: AdjacencyValue<TState, TEvent>;
+  [key: SerializedSnapshot]: AdjacencyValue<TState, TEvent>;
 }
 
-export function resolveTraversalOptions<TState, TEvent extends EventObject>(
-  traversalOptions?: TraversalOptions<TState, TEvent>,
-  defaultOptions?: TraversalOptions<TState, TEvent>
-): TraversalConfig<TState, TEvent> {
+function isMachineLogic(logic: AnyActorLogic): logic is AnyStateMachine {
+  return 'getStateNodeById' in logic;
+}
+
+export function resolveTraversalOptions<TLogic extends AnyActorLogic>(
+  logic: TLogic,
+  traversalOptions?: TraversalOptions<
+    ReturnType<TLogic['transition']>,
+    EventFromLogic<TLogic>,
+    InputFrom<TLogic>
+  >,
+  defaultOptions?: TraversalOptions<
+    ReturnType<TLogic['transition']>,
+    EventFromLogic<TLogic>,
+    InputFrom<TLogic>
+  >
+): TraversalConfig<ReturnType<TLogic['transition']>, EventFromLogic<TLogic>> {
+  const resolvedDefaultOptions =
+    defaultOptions ??
+    (isMachineLogic(logic)
+      ? (createDefaultMachineOptions(
+          logic,
+          traversalOptions as any
+        ) as TraversalOptions<
+          ReturnType<TLogic['transition']>,
+          EventFromLogic<TLogic>,
+          InputFrom<TLogic>
+        >)
+      : undefined);
   const serializeState =
     traversalOptions?.serializeState ??
-    defaultOptions?.serializeState ??
+    resolvedDefaultOptions?.serializeState ??
     ((state) => JSON.stringify(state));
-  const traversalConfig: TraversalConfig<TState, TEvent> = {
+  const traversalConfig: TraversalConfig<
+    ReturnType<TLogic['transition']>,
+    EventFromLogic<TLogic>
+  > = {
     serializeState,
     serializeEvent,
-    filter: () => true,
     events: [],
-    traversalLimit: Infinity,
+    limit: Infinity,
     fromState: undefined,
     toState: undefined,
     // Traversal should not continue past the `toState` predicate
     // since the target state has already been reached at that point
-    stopCondition: traversalOptions?.toState,
-    ...defaultOptions,
+    stopWhen: traversalOptions?.toState,
+    ...resolvedDefaultOptions,
     ...traversalOptions
   };
 
   return traversalConfig;
 }
 
-export function joinPaths<TState, TEvent extends EventObject>(
-  path1: StatePath<TState, TEvent>,
-  path2: StatePath<TState, TEvent>
-): StatePath<TState, TEvent> {
-  const secondPathSource = path2.steps[0]?.state ?? path2.state;
+export function joinPaths<
+  TSnapshot extends Snapshot<unknown>,
+  TEvent extends EventObject
+>(
+  headPath: StatePath<TSnapshot, TEvent>,
+  tailPath: StatePath<TSnapshot, TEvent>
+): StatePath<TSnapshot, TEvent> {
+  const secondPathSource = tailPath.steps[0].state;
 
-  if (secondPathSource !== path1.state) {
+  if (secondPathSource !== headPath.state) {
     throw new Error(`Paths cannot be joined`);
   }
 
   return {
-    state: path2.state,
-    steps: path1.steps.concat(path2.steps),
-    weight: path1.weight + path2.weight
+    state: tailPath.state,
+    // e.g. [A, B, C] + [C, D, E] = [A, B, C, D, E]
+    steps: headPath.steps.concat(tailPath.steps.slice(1)),
+    weight: headPath.weight + tailPath.weight
   };
 }

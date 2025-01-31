@@ -1,35 +1,53 @@
-import { EventObject } from 'xstate';
 import {
-  SerializedEvent,
-  SerializedState,
-  SimpleBehavior,
-  TraversalOptions
-} from './types';
-import { AdjacencyMap, resolveTraversalOptions } from './graph';
+  ActorScope,
+  ActorLogic,
+  ActorSystem,
+  EventObject,
+  Snapshot
+} from 'xstate';
+import { SerializedEvent, SerializedSnapshot, TraversalOptions } from './types';
+import { AdjacencyMap, AdjacencyValue, resolveTraversalOptions } from './graph';
+import { createMockActorScope } from './actorScope';
 
-export function getAdjacencyMap<TState, TEvent extends EventObject>(
-  behavior: SimpleBehavior<TState, TEvent>,
-  options: TraversalOptions<TState, TEvent>
-): AdjacencyMap<TState, TEvent> {
-  const { transition } = behavior;
+export function getAdjacencyMap<
+  TSnapshot extends Snapshot<unknown>,
+  TEvent extends EventObject,
+  TInput,
+  TSystem extends ActorSystem<any> = ActorSystem<any>
+>(
+  logic: ActorLogic<TSnapshot, TEvent, TInput, TSystem>,
+  options: TraversalOptions<TSnapshot, TEvent, TInput>
+): AdjacencyMap<TSnapshot, TEvent> {
+  const { transition } = logic;
   const {
     serializeEvent,
     serializeState,
     events: getEvents,
-    traversalLimit: limit,
+    limit,
     fromState: customFromState,
-    stopCondition
-  } = resolveTraversalOptions(options);
-  const fromState = customFromState ?? behavior.initialState;
-  const adj: AdjacencyMap<TState, TEvent> = {};
+    stopWhen
+  } = resolveTraversalOptions(logic, options);
+  const actorScope = createMockActorScope() as ActorScope<
+    TSnapshot,
+    TEvent,
+    TSystem
+  >;
+  const fromState =
+    customFromState ??
+    logic.getInitialSnapshot(
+      actorScope,
+      // TODO: fix this
+      options.input as TInput
+    );
+  const adj: AdjacencyMap<TSnapshot, TEvent> = {};
 
   let iterations = 0;
   const queue: Array<{
-    nextState: TState;
+    nextState: TSnapshot;
     event: TEvent | undefined;
-    prevState: TState | undefined;
+    prevState: TSnapshot | undefined;
   }> = [{ nextState: fromState, event: undefined, prevState: undefined }];
-  const stateMap = new Map<SerializedState, TState>();
+  const stateMap = new Map<SerializedSnapshot, TSnapshot>();
 
   while (queue.length) {
     const { nextState: state, event, prevState } = queue.shift()!;
@@ -42,7 +60,7 @@ export function getAdjacencyMap<TState, TEvent extends EventObject>(
       state,
       event,
       prevState
-    ) as SerializedState;
+    ) as SerializedSnapshot;
     if (adj[serializedState]) {
       continue;
     }
@@ -53,7 +71,7 @@ export function getAdjacencyMap<TState, TEvent extends EventObject>(
       transitions: {}
     };
 
-    if (stopCondition && stopCondition(state)) {
+    if (stopWhen && stopWhen(state)) {
       continue;
     }
 
@@ -61,19 +79,49 @@ export function getAdjacencyMap<TState, TEvent extends EventObject>(
       typeof getEvents === 'function' ? getEvents(state) : getEvents;
 
     for (const nextEvent of events) {
-      const nextState = transition(state, nextEvent);
+      const nextSnapshot = transition(state, nextEvent, actorScope);
 
-      if (!options.filter || options.filter(nextState, nextEvent)) {
-        adj[serializedState].transitions[
-          serializeEvent(nextEvent) as SerializedEvent
-        ] = {
-          event: nextEvent,
-          state: nextState
-        };
-        queue.push({ nextState, event: nextEvent, prevState: state });
-      }
+      adj[serializedState].transitions[
+        serializeEvent(nextEvent) as SerializedEvent
+      ] = {
+        event: nextEvent,
+        state: nextSnapshot
+      };
+      queue.push({
+        nextState: nextSnapshot,
+        event: nextEvent,
+        prevState: state
+      });
     }
   }
 
   return adj;
+}
+
+export function adjacencyMapToArray<TSnapshot, TEvent>(
+  adjMap: AdjacencyMap<TSnapshot, TEvent>
+): Array<{
+  state: TSnapshot;
+  event: TEvent;
+  nextState: TSnapshot;
+}> {
+  const adjList: Array<{
+    state: TSnapshot;
+    event: TEvent;
+    nextState: TSnapshot;
+  }> = [];
+
+  for (const adjValue of Object.values(adjMap)) {
+    for (const transition of Object.values(
+      (adjValue as AdjacencyValue<TSnapshot, TEvent>).transitions
+    )) {
+      adjList.push({
+        state: (adjValue as AdjacencyValue<TSnapshot, TEvent>).state,
+        event: transition.event,
+        nextState: transition.state
+      });
+    }
+  }
+
+  return adjList;
 }

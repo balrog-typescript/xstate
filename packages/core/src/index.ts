@@ -1,66 +1,40 @@
-import * as actions from './actions';
-import { Actor, toActorRef } from './Actor';
-import {
-  interpret,
-  Interpreter,
-  InterpreterStatus,
-  spawn
-} from './interpreter';
-import { createMachine, Machine } from './Machine';
-import { mapState } from './mapState';
-import { matchState } from './match';
-import { createSchema, t } from './schema';
-import { State } from './State';
-import { StateNode } from './StateNode';
-export { spawnBehavior } from './behaviors';
-export { XStateDevInterface } from './devTools';
-export * from './typegenTypes';
-export * from './types';
-export { matchesState, toEventObject, toObserver, toSCXMLEvent } from './utils';
+export * from './actions.ts';
+export * from './actors/index.ts';
+export { assertEvent } from './assert.ts';
 export {
   Actor,
-  toActorRef,
-  Machine,
-  StateNode,
-  State,
-  mapState,
-  actions,
-  assign,
-  send,
-  sendTo,
-  sendParent,
-  sendUpdate,
-  raise,
-  log,
-  pure,
-  choose,
-  stop,
-  forwardTo,
+  createActor,
   interpret,
-  Interpreter,
-  InterpreterStatus,
-  matchState,
-  spawn,
-  doneInvoke,
-  createMachine,
-  createSchema,
-  t
-};
-
-const {
-  assign,
-  send,
-  sendTo,
-  sendParent,
-  sendUpdate,
-  forwardTo,
-  doneInvoke,
-  raise,
-  log,
-  pure,
-  choose,
-  stop
-} = actions;
+  type Interpreter,
+  type RequiredActorOptionsKeys as RequiredActorOptionsKeys
+} from './createActor.ts';
+export { createMachine } from './createMachine.ts';
+export { getInitialSnapshot, getNextSnapshot } from './getNextSnapshot.ts';
+export { and, not, or, stateIn } from './guards.ts';
+export type {
+  InspectedActorEvent,
+  InspectedEventEvent,
+  InspectedSnapshotEvent,
+  InspectionEvent
+} from './inspection.ts';
+export { setup } from './setup.ts';
+export { SimulatedClock } from './SimulatedClock.ts';
+export { type Spawner } from './spawn.ts';
+export { isMachineSnapshot, type MachineSnapshot } from './State.ts';
+export { StateMachine } from './StateMachine.ts';
+export { StateNode } from './StateNode.ts';
+export { getStateNodes } from './stateUtils.ts';
+export type { ActorSystem } from './system.ts';
+export { toPromise } from './toPromise.ts';
+export * from './types.ts';
+export {
+  getAllOwnEventDescriptors as __unsafe_getAllOwnEventDescriptors,
+  matchesState,
+  pathToStateValue,
+  toObserver
+} from './utils.ts';
+export { transition, initialTransition } from './transition.ts';
+export { waitFor } from './waitFor.ts';
 
 declare global {
   interface SymbolConstructor {

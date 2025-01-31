@@ -1,10 +1,13 @@
 # Delayed events and transitions
 
-Delays and timeouts can be handled declaratively with statecharts. To learn more, see the section in our [introduction to statecharts](./introduction-to-state-machines-and-statecharts/index.md#delayed-transitions).
+:::warning These XState v4 docs are no longer maintained
 
-:::tip Check out our new docs!
-🆕 Find more about [delayed (after) transitions in XState](https://stately.ai/docs/xstate/transitions-and-choices/after) as well as a [no-code introduction to delayed transitions](https://stately.ai/docs/transitions-and-events/delayed-transitions) in our new docs.
+XState v5 is out now! [Read more about XState v5](https://stately.ai/blog/2023-12-01-xstate-v5)
+
+🆕 Find more about [delayed (after) transitions in XState](https://stately.ai/docs/delayed-transitions) as well as a [no-code introduction to delayed transitions](https://stately.ai/docs/editor-states-and-transitions#delayed-after-transitions) in our new docs.
 :::
+
+Delays and timeouts can be handled declaratively with statecharts. To learn more, see the section in our [introduction to statecharts](./introduction-to-state-machines-and-statecharts/index.md#delayed-transitions).
 
 ## Delayed transitions
 
@@ -249,9 +252,9 @@ const dynamicDelayMachine = createMachine({
   }
 });
 
-const dynamicDelayService = interpret(dynamicDelayMachine)
-  .onDone(() => console.log('done!'))
-  .start();
+const dynamicDelayService = interpret(dynamicDelayMachine);
+dynamicDelayService.subscribe({ complete: () => console.log('done!') });
+dynamicDelayService.start();
 
 dynamicDelayService.send({
   type: 'ACTIVATE',
@@ -316,8 +319,8 @@ The `after: ...` property does not introduce anything new to statechart semantic
 states: {
   green: {
     entry: [
-      send(after(1000, 'light.green'), { delay: 1000 }),
-      send(after(2000, 'light.green'), { delay: 2000 })
+      send({ type: after(1000, 'light.green') }, { delay: 1000 }),
+      send({ type: after(2000, 'light.green') }, { delay: 2000 })
     ],
     onExit: [
       cancel(after(1000, 'light.green')),

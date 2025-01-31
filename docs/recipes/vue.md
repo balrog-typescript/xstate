@@ -1,10 +1,16 @@
 # Usage with Vue
 
+:::warning These XState v4 docs are no longer maintained
+
+XState v5 is out now! [Read more about XState v5](https://stately.ai/blog/2023-12-01-xstate-v5) and [check out the XState v5 docs](https://stately.ai/docs/xstate).
+
+:::
+
 Usage of XState in a Vue application may vary depending on which version of Vue your application is running. This page focuses on Vue 2 only. To see how to use XState with Vue 3 check the documentation for the XState [`@xstate/vue` package](../packages/xstate-vue).
 
 There are two ways you can use XState with Vue 2:
 
-1. *Since Vue `^2.7`*: using the `useMachine` hook provided by the [`xstate-vue2` package](https://github.com/ChrisShank/xstate-vue2) (3rd-party) plugin;
+1. _Since Vue `^2.7`_: using the `useMachine` hook provided by the [`xstate-vue2` package](https://github.com/ChrisShank/xstate-vue2) (3rd-party) plugin;
 2. Using XState `interpret` utility to create a service and inject it into your app.
 
 ::: tip
@@ -53,20 +59,17 @@ export const toggleMachine = createMachine({
 <!-- toggle.vue -->
 <!-- Top level bindigs are pre-processed via "setup" -->
 <script setup>
-import { useMachine } from "xstate-vue2";
-import toggleMachine from "../path/to/toggleMachine";
+  import { useMachine } from 'xstate-vue2';
+  import toggleMachine from '../path/to/toggleMachine';
 
-const { state, send } = useMachine(toggleMachine);
+  const { state, send } = useMachine(toggleMachine);
 </script>
 
 <template>
   <main>
     <button @click="send('TOGGLE')">
-      {{
-        state.value === "inactive"
-          ? "Click to activate"
-          : "Active! Click to deactivate"
-      }}
+      {{ state.value === "inactive" ? "Click to activate" : "Active! Click to
+      deactivate" }}
     </button>
   </main>
 </template>

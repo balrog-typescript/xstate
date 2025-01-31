@@ -1,5 +1,4 @@
-import { createMachine, assign } from 'xstate';
-import { choose, log } from 'xstate/lib/actions';
+import { setup, enqueueActions, assign } from 'xstate';
 
 function range(num: number): number[] {
   return Array.from(Array(num).keys());
@@ -11,14 +10,59 @@ export interface Tile {
   y: number;
 }
 
-export const tilesMachine = createMachine({
-  schema: {
-    context: {} as {
+export const tilesMachine = setup({
+  types: {} as {
+    context: {
       tiles: number[];
       selected: Tile | undefined;
       hovered: Tile | undefined;
-    }
+    };
   },
+  guards: {
+    isAdjacent: ({ context: { selected, hovered } }) => {
+      if (!selected || !hovered) {
+        return false;
+      }
+      const { x: hx, y: hy } = hovered;
+      const { x: sx, y: sy } = selected;
+      return (
+        (hx === sx && Math.abs(hy - sy) === 1) ||
+        (hy === sy && Math.abs(hx - sx) === 1)
+      );
+    },
+    allTilesInOrder: ({ context: { tiles } }) =>
+      tiles.every((tile, idx) => tile === idx)
+  },
+  actions: {
+    clearSelectedTile: assign({
+      selected: undefined
+    }),
+    clearHoveredTile: assign({
+      hovered: undefined
+    }),
+    setSelectedTile: assign({
+      selected: ({ event }) => event.tile
+    }),
+    setHoveredTile: assign({
+      hovered: ({ event }) => event.tile
+    }),
+    swapTiles: assign({
+      tiles: ({ context: { tiles, selected, hovered } }) => {
+        return swap(tiles, hovered!.index, selected!.index);
+      }
+    }),
+    shuffleTiles: assign({
+      tiles: ({ context: { tiles } }) => {
+        const newTiles = [...tiles];
+        for (let i = newTiles.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [newTiles[i], newTiles[j]] = [newTiles[j], newTiles[i]];
+        }
+        return newTiles;
+      }
+    })
+  }
+}).createMachine({
   context: {
     tiles: range(16),
     selected: undefined,
@@ -56,31 +100,25 @@ export const tilesMachine = createMachine({
             },
             'tile.hover': [
               {
-                actions: [
-                  'setHoveredTile',
-                  (ctx, e) => console.log('hovered', ctx, e.tile)
-                ]
+                actions: ['setHoveredTile']
                 // target: '.canSwapTiles'
               }
             ],
             'tile.move': {
-              actions: choose([
-                {
-                  cond: 'isAdjacent',
-                  actions: [
-                    'swapTiles',
-                    'clearSelectedTile',
-                    'clearHoveredTile'
-                  ]
+              actions: enqueueActions(({ enqueue, check }) => {
+                if (check('isAdjacent')) {
+                  enqueue('swapTiles');
+                  enqueue('clearSelectedTile');
+                  enqueue('clearHoveredTile');
                 }
-              ]),
+              }),
               target: '#selecting'
             }
           }
         }
       },
       always: {
-        cond: 'allTilesInOrder',
+        guard: 'allTilesInOrder',
         target: '#gameOver'
       },
       initial: 'selecting'
@@ -89,54 +127,9 @@ export const tilesMachine = createMachine({
   on: {
     shuffle: { target: '.playing', actions: ['shuffleTiles'] }
   }
-}).withConfig({
-  guards: {
-    isAdjacent: ({ selected, hovered }) => {
-      console.log('isAdjacent', selected, hovered);
-      if (!selected || !hovered) {
-        return false;
-      }
-      const { x: hx, y: hy } = hovered;
-      const { x: sx, y: sy } = selected;
-      return (
-        (hx === sx && Math.abs(hy - sy) === 1) ||
-        (hy === sy && Math.abs(hx - sx) === 1)
-      );
-    },
-    allTilesInOrder: ({ tiles }) => tiles.every((tile, idx) => tile === idx)
-  },
-  actions: {
-    clearSelectedTile: assign({
-      selected: undefined
-    }),
-    clearHoveredTile: assign({
-      hovered: undefined
-    }),
-    setSelectedTile: assign({
-      selected: (_, event) => event.tile
-    }),
-    setHoveredTile: assign({
-      hovered: (_, event) => event.tile
-    }),
-    swapTiles: assign({
-      tiles: ({ tiles, selected, hovered }) => {
-        return swap(tiles, hovered?.index, selected?.index);
-      }
-    }),
-    shuffleTiles: assign({
-      tiles: ({ tiles }) => {
-        const newTiles = [...tiles];
-        for (let i = newTiles.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [newTiles[i], newTiles[j]] = [newTiles[j], newTiles[i]];
-        }
-        return newTiles;
-      }
-    })
-  }
 });
 
-export function swap(arr, a, b) {
+export function swap<T extends any[]>(arr: T, a: number, b: number): T {
   [arr[a], arr[b]] = [arr[b], arr[a]];
   return arr;
 }

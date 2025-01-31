@@ -31,6 +31,7 @@ module.exports = {
     toc: { includeLevel: [2, 3], slugify: slugifyWithBadges }
   },
   head: [
+    ['meta', { name: 'robots', content: 'noindex' }],
     ['script', { src: 'https://plausible.io/js/plausible.js', defer: 'defer' }]
   ],
   themeConfig: {
@@ -141,7 +142,6 @@ module.exports = {
               '/packages/xstate-react/',
               '/packages/xstate-vue/',
               '/packages/xstate-graph/',
-              '/packages/xstate-fsm/',
               '/packages/xstate-test/',
               '/packages/xstate-immer/',
               '/packages/xstate-inspect/',
@@ -269,7 +269,6 @@ module.exports = {
               '/fr/packages/xstate-react/',
               '/fr/packages/xstate-vue/',
               '/fr/packages/xstate-graph/',
-              '/fr/packages/xstate-fsm/',
               '/fr/packages/xstate-test/',
               '/fr/packages/xstate-immer/',
               '/fr/packages/xstate-inspect/',
@@ -393,7 +392,6 @@ module.exports = {
           'packages/xstate-react/',
           'packages/xstate-vue/',
           'packages/xstate-graph/',
-          'packages/xstate-fsm/',
           'packages/xstate-test/',
           'packages/xstate-immer/',
           'packages/xstate-inspect/',

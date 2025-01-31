@@ -1,5 +1,155 @@
 # @xstate/svelte
 
+## 4.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`d99df1d8f4fe49145c9974465b65028bf19b365f`](https://github.com/statelyai/xstate/commit/d99df1d8f4fe49145c9974465b65028bf19b365f)]:
+  - xstate@5.19.2
+
+## 4.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`bf6119a7310a878afbf4f5b01f5e24288f9a0f16`](https://github.com/statelyai/xstate/commit/bf6119a7310a878afbf4f5b01f5e24288f9a0f16)]:
+  - xstate@5.19.1
+
+## 4.0.1
+
+### Patch Changes
+
+- [#5131](https://github.com/statelyai/xstate/pull/5131) [`55ffd698419ea7259506bb0fa4bba9c7f592823e`](https://github.com/statelyai/xstate/commit/55ffd698419ea7259506bb0fa4bba9c7f592823e) Thanks [@lendle](https://github.com/lendle)! - Add Svelte 5 to the allowed peer dependency range
+
+## 4.0.0
+
+### Patch Changes
+
+- Updated dependencies [[`8c4b70652acaef2702f32435362e4755679a516d`](https://github.com/statelyai/xstate/commit/8c4b70652acaef2702f32435362e4755679a516d)]:
+  - xstate@5.19.0
+
+## 3.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`25963966c394fc904dc9b701a420b6e204ebe7f7`](https://github.com/statelyai/xstate/commit/25963966c394fc904dc9b701a420b6e204ebe7f7)]:
+  - xstate@5.18.2
+
+## 3.0.4
+
+### Patch Changes
+
+- [#5055](https://github.com/statelyai/xstate/pull/5055) [`ad38c35c37`](https://github.com/statelyai/xstate/commit/ad38c35c377d4ec5c97710fda12512abbe5f7140) Thanks [@SandroMaglione](https://github.com/SandroMaglione)! - Updated types of `useActor`, `useMachine`, and `useActorRef` to require `input` when defined inside `types/input`.
+
+  Previously even when `input` was defined inside `types`, `useActor`, `useMachine`, and `useActorRef` would **not** make the input required:
+
+  ```tsx
+  const machine = setup({
+    types: {
+      input: {} as { value: number }
+    }
+  }).createMachine({});
+
+  function App() {
+    // Event if `input` is not defined, `useMachine` works at compile time, but risks crashing at runtime
+    const _ = useMachine(machine);
+    return <></>;
+  }
+  ```
+
+  With this change the above code will show a type error, since `input` is now required:
+
+  ```tsx
+  const machine = setup({
+    types: {
+      input: {} as { value: number }
+    }
+  }).createMachine({});
+
+  function App() {
+    const _ = useMachine(machine, {
+      input: { value: 1 } // Now input is required at compile time!
+    });
+    return <></>;
+  }
+  ```
+
+  This avoids runtime errors when forgetting to pass `input` when defined inside `types`.
+
+## 3.0.3
+
+### Patch Changes
+
+- [#4844](https://github.com/statelyai/xstate/pull/4844) [`5aa6eb05c`](https://github.com/statelyai/xstate/commit/5aa6eb05c4d79a7efda9895b212fdb45a638f31f) Thanks [@davidkpiano](https://github.com/davidkpiano)! - The `useSelector(…)` hook from `@xstate/react` is now compatible with stores from `@xstate/store`.
+
+  ```tsx
+  import { createStore } from '@xstate/store';
+  import { useSelector } from '@xstate/react';
+
+  const store = createStore(
+    {
+      count: 0
+    },
+    {
+      inc: {
+        count: (context) => context.count + 1
+      }
+    }
+  );
+
+  function Counter() {
+    // Note that this `useSelector` is from `@xstate/react`,
+    // not `@xstate/store/react`
+    const count = useSelector(store, (state) => state.context.count);
+
+    return (
+      <div>
+        <button onClick={() => store.send({ type: 'inc' })}>{count}</button>
+      </div>
+    );
+  }
+  ```
+
+## 3.0.2
+
+### Patch Changes
+
+- [#4600](https://github.com/statelyai/xstate/pull/4600) [`1f2ccb97c`](https://github.com/statelyai/xstate/commit/1f2ccb97ca00ff2d2ec1c9996f8205dbe656602b) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Typegen-based types for detecting missing implementations have been removed internally.
+
+## 3.0.1
+
+### Patch Changes
+
+- [#4591](https://github.com/statelyai/xstate/pull/4591) [`f8cc116d3`](https://github.com/statelyai/xstate/commit/f8cc116d31ead0ffd39db8bbd1b5122702b229a0) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Marked `useMachine` as aliased, not deprecated.
+
+## 3.0.0
+
+### Major Changes
+
+- [#4507](https://github.com/statelyai/xstate/pull/4507) [`9ea542c34`](https://github.com/statelyai/xstate/commit/9ea542c346f7028ca77ae56ce1fe285372fa4cab) Thanks [@Andarist](https://github.com/Andarist)! - The `useMachine(machine)` hook now returns `{ snapshot, send, actorRef }` instead of `{ state, send, service }`:
+
+  ```diff
+  const {
+  - state,
+  + snapshot,
+    send,
+  - service
+  + actorRef
+  } = useMachine(machine);
+  ```
+
+- [#4265](https://github.com/statelyai/xstate/pull/4265) [`1153b3f9a`](https://github.com/statelyai/xstate/commit/1153b3f9a95b4d76ff5408be8bd03a66f884b9cb) Thanks [@davidkpiano](https://github.com/davidkpiano)! - FSM-related functions have been removed.
+
+### Minor Changes
+
+- [#3727](https://github.com/statelyai/xstate/pull/3727) [`5fb3c683d`](https://github.com/statelyai/xstate/commit/5fb3c683d9a9bdc06637b3a13a5b575059aebadd) Thanks [@Andarist](https://github.com/Andarist)! - `exports` field has been added to the `package.json` manifest. It limits what files can be imported from a package - it's no longer possible to import from files that are not considered to be a part of the public API.
+- [#4507](https://github.com/statelyai/xstate/pull/4507) [`9ea542c34`](https://github.com/statelyai/xstate/commit/9ea542c346f7028ca77ae56ce1fe285372fa4cab) Thanks [@Andarist](https://github.com/Andarist)! - The `useActorRef(logic)` and `useActor(logic)` hooks have been added.
+
+## 2.1.0
+
+### Minor Changes
+
+- [#4128](https://github.com/statelyai/xstate/pull/4128) [`bdcc3b0fb`](https://github.com/statelyai/xstate/commit/bdcc3b0fbda3caa76e8bdecc132dffe1d76d959a) Thanks [@jer-0](https://github.com/jer-0)! - Allow Svelte 4 in the specified peer dependency range.
+
 ## 2.0.1
 
 ### Patch Changes

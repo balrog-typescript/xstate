@@ -1,3 +1,6 @@
+# eslint
+.eslintcache
+
 # Logs
 logs
 *.log
@@ -35,9 +38,6 @@ es/
 editor/
 _examples/
 __examples/
-.vscode/
-!.vscode/settings.json
-src/invoke.ts
 *.tsbuildinfo
 
 # JetBrains IDE's
@@ -56,3 +56,6 @@ docs/.cache
 
 # Docs
 api/
+
+# pnpm
+.pnpm-lock.yaml

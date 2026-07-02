@@ -1,20 +1,18 @@
 {
   "compilerOptions": {
-    "allowSyntheticDefaultImports": true,
     "target": "esnext",
     "isolatedModules": true,
-    "moduleResolution": "node",
+    "moduleResolution": "nodenext",
+    "module": "nodenext",
+    "allowImportingTsExtensions": true,
     "noEmit": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "strictNullChecks": true,
-    "downlevelIteration": true,
-    "experimentalDecorators": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "jsx": "react",
-    "lib": ["es6", "dom"],
-    "strictPropertyInitialization": true
+    "jsx": "react-jsx",
+    "lib": ["es2024", "dom"],
+    "strict": true,
+    "stripInternal": true,
+    "types": ["vitest/globals"]
   },
-  "exclude": ["examples"]
+  "exclude": ["**/examples", "**/templates", "scripts/type-error-fixtures"]
 }

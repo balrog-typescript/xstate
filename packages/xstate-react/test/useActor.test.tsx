@@ -1,492 +1,264 @@
+import { act, fireEvent, screen } from '@testing-library/react';
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as React from 'react';
 import { useState } from 'react';
-import { useMachine } from '../src';
+import { BehaviorSubject } from 'rxjs';
 import {
-  createMachine,
-  sendParent,
-  assign,
-  spawnMachine,
-  ActorRefFrom,
-  interpret,
+  Actor,
   ActorRef,
-  spawn
+  Snapshot,
+  SnapshotFrom,
+  createActor,
+  createMachine
 } from 'xstate';
-import { render, fireEvent, act } from '@testing-library/react';
-import { useActor } from '../src/useActor';
-import { invokeMachine } from 'xstate/invoke';
+import {
+  createCallbackLogic,
+  createObservableLogic,
+  createAsyncLogic
+} from 'xstate';
+import { useActor, useSelector } from '../src/index.ts';
+import { describeEachReactMode } from './utils.tsx';
+import z from 'zod';
 
-import { toActorRef } from 'xstate/actor';
-import { createMachineBehavior } from 'xstate/behaviors';
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-describe('useActor', () => {
-  it('initial invoked actor should be immediately available', (done) => {
-    const childMachine = createMachine({
-      id: 'childMachine',
-      initial: 'active',
-      states: {
-        active: {}
-      }
-    });
-    const machine = createMachine({
-      initial: 'active',
-      invoke: {
-        id: 'child',
-        src: invokeMachine(childMachine)
+describeEachReactMode('useActor (%s)', ({ suiteKey, render }) => {
+  const context = {
+    data: undefined as undefined | string
+  };
+  const fetchMachine = createMachine({
+    id: 'fetch',
+    // types: {} as {
+    //   context: typeof context;
+    //   events: { type: 'FETCH' } | DoneActorEvent;
+    //   actorSources: {
+    //     src: 'fetchData';
+    //     logic: ActorLogicFrom<Promise<string>>;
+    //   };
+    // },
+    schemas: {
+      context: z.object({
+        data: z.string().optional()
+      }),
+      events: z.object({
+        type: z.literal('FETCH')
+      }) as any
+    },
+    actorSources: {
+      fetchData: createMachine({})
+    },
+    initial: 'idle',
+    context,
+    states: {
+      idle: {
+        on: { FETCH: { target: 'loading' } }
       },
-      states: {
-        active: {}
-      }
-    });
-
-    const ChildTest: React.FC<{ actor: ActorRefFrom<typeof childMachine> }> = ({
-      actor
-    }) => {
-      const [state] = useActor(actor);
-
-      expect(state.value).toEqual('active');
-
-      done();
-
-      return null;
-    };
-
-    const Test = () => {
-      const [state] = useMachine(machine);
-
-      return (
-        <ChildTest
-          actor={state.children.child as ActorRefFrom<typeof childMachine>}
-        />
-      );
-    };
-
-    render(
-      <React.StrictMode>
-        <Test />
-      </React.StrictMode>
-    );
-  });
-
-  it('invoked actor should be able to receive (deferred) events that it replays when active', (done) => {
-    const childMachine = createMachine({
-      id: 'childMachine',
-      initial: 'active',
-      states: {
-        active: {
-          on: {
-            FINISH: { actions: sendParent('FINISH') }
-          }
-        }
-      }
-    });
-    const machine = createMachine({
-      initial: 'active',
-      invoke: {
-        id: 'child',
-        src: invokeMachine(childMachine)
-      },
-      states: {
-        active: {
-          on: { FINISH: 'success' }
-        },
-        success: {}
-      }
-    });
-
-    const ChildTest: React.FC<{ actor: ActorRefFrom<typeof childMachine> }> = ({
-      actor
-    }) => {
-      const [state, send] = useActor(actor);
-
-      expect(state.value).toEqual('active');
-
-      React.useEffect(() => {
-        send({ type: 'FINISH' });
-      }, []);
-
-      return null;
-    };
-
-    const Test = () => {
-      const [state] = useMachine(machine);
-
-      if (state.matches('success')) {
-        done();
-      }
-
-      return (
-        <ChildTest
-          actor={state.children.child as ActorRefFrom<typeof childMachine>}
-        />
-      );
-    };
-
-    render(
-      <React.StrictMode>
-        <Test />
-      </React.StrictMode>
-    );
-  });
-
-  it('initial spawned actor should be immediately available', (done) => {
-    const childMachine = createMachine({
-      id: 'childMachine',
-      initial: 'active',
-      states: {
-        active: {}
-      }
-    });
-
-    interface Ctx {
-      actorRef?: ActorRefFrom<typeof childMachine>;
-    }
-
-    const machine = createMachine<Ctx>({
-      initial: 'active',
-      context: {
-        actorRef: undefined
-      },
-      states: {
-        active: {
-          entry: assign({
-            actorRef: () => spawnMachine(childMachine)
-          })
-        }
-      }
-    });
-
-    const ChildTest: React.FC<{ actor: ActorRefFrom<typeof childMachine> }> = ({
-      actor
-    }) => {
-      const [state] = useActor(actor);
-
-      expect(state.value).toEqual('active');
-
-      done();
-
-      return null;
-    };
-
-    const Test = () => {
-      const [state] = useMachine(machine);
-      const { actorRef } = state.context;
-
-      return <ChildTest actor={actorRef!} />;
-    };
-
-    render(
-      <React.StrictMode>
-        <Test />
-      </React.StrictMode>
-    );
-  });
-
-  it('spawned actor should be able to receive (deferred) events that it replays when active', (done) => {
-    const childMachine = createMachine({
-      id: 'childMachine',
-      initial: 'active',
-      states: {
-        active: {
-          on: {
-            FINISH: { actions: sendParent('FINISH') }
-          }
-        }
-      }
-    });
-    const machine = createMachine<{
-      actorRef?: ActorRefFrom<typeof childMachine>;
-    }>({
-      initial: 'active',
-      context: {
-        actorRef: undefined
-      },
-      states: {
-        active: {
-          entry: assign({
-            actorRef: () => spawnMachine(childMachine)
-          }),
-          on: { FINISH: 'success' }
-        },
-        success: {}
-      }
-    });
-
-    const ChildTest: React.FC<{ actor: ActorRefFrom<typeof childMachine> }> = ({
-      actor
-    }) => {
-      const [state, send] = useActor(actor);
-
-      expect(state.value).toEqual('active');
-
-      React.useEffect(() => {
-        send({ type: 'FINISH' });
-      }, []);
-
-      return null;
-    };
-
-    const Test = () => {
-      const [state] = useMachine(machine);
-
-      if (state.matches('success')) {
-        done();
-      }
-
-      const { actorRef } = state.context;
-
-      return <ChildTest actor={actorRef!} />;
-    };
-
-    render(
-      <React.StrictMode>
-        <Test />
-      </React.StrictMode>
-    );
-  });
-
-  it('actor should provide snapshot value immediately', () => {
-    const simpleActor = toActorRef({
-      send: () => {
-        /* ... */
-      },
-      latestValue: 42,
-      subscribe: () => {
-        return {
-          unsubscribe: () => {
-            /* ... */
-          }
-        };
-      }
-    });
-
-    const Test = () => {
-      const [state] = useActor(simpleActor, (a) => a.latestValue);
-
-      return <div data-testid="state">{state}</div>;
-    };
-
-    const { getByTestId } = render(<Test />);
-
-    const div = getByTestId('state');
-
-    expect(div.textContent).toEqual('42');
-  });
-
-  it('should provide value from `actor.getSnapshot()`', () => {
-    const simpleActor = toActorRef({
-      name: 'test',
-      send: () => {
-        /* ... */
-      },
-      getSnapshot: () => 42,
-      subscribe: () => {
-        return {
-          unsubscribe: () => {
-            /* ... */
-          }
-        };
-      }
-    });
-
-    const Test = () => {
-      const [state] = useActor(simpleActor);
-
-      return <div data-testid="state">{state}</div>;
-    };
-
-    const { getByTestId } = render(<Test />);
-
-    const div = getByTestId('state');
-
-    expect(div.textContent).toEqual('42');
-  });
-
-  it('should update snapshot value when actor changes', () => {
-    const createSimpleActor = (value: number) =>
-      toActorRef({
-        send: () => {
-          /* ... */
-        },
-        latestValue: value,
-        subscribe: () => {
-          return {
-            unsubscribe: () => {
-              /* ... */
+      loading: {
+        invoke: {
+          id: 'fetchData',
+          // src: 'fetchData',
+          src: ({ actorSources }: any) => actorSources.fetchData,
+          // onDone: {
+          //   target: 'success',
+          //   actions: assign({
+          //     data: ({ event }) => {
+          //       return event.output;
+          //     }
+          //   }),
+          //   guard: ({ event }) => !!event.output.length
+          // }
+          onDone: ({ event }: any) => {
+            if ((event.output as any).length > 0) {
+              return {
+                context: {
+                  data: event.output
+                },
+                target: 'success'
+              };
             }
-          };
+          }
+        } as any
+      },
+      success: {
+        type: 'final'
+      }
+    }
+  });
+
+  const actorRef = createActor(
+    fetchMachine.provide({
+      actorSources: {
+        fetchData: createMachine({
+          initial: 'done',
+          states: {
+            done: {
+              type: 'final'
+            }
+          },
+          output: 'persisted data'
+        }) as any
+      }
+    })
+  ).start();
+  actorRef.send({ type: 'FETCH' });
+
+  const persistedSuccessFetchState = actorRef.getPersistedSnapshot();
+
+  const Fetcher: React.FC<{
+    onFetch: () => Promise<any>;
+    persistedState?: Snapshot<unknown>;
+  }> = ({
+    onFetch = () => {
+      return new Promise((res) => res('some data'));
+    },
+    persistedState
+  }) => {
+    const [current, send] = useActor(
+      fetchMachine.provide({
+        actorSources: {
+          fetchData: createAsyncLogic({ run: onFetch }) as any
         }
+      }),
+      {
+        snapshot: persistedState
+      }
+    );
+
+    switch (current.value) {
+      case 'idle':
+        return <button onClick={(_) => send({ type: 'FETCH' })}>Fetch</button>;
+      case 'loading':
+        return <div>Loading...</div>;
+      case 'success':
+        return (
+          <div>
+            Success! Data: <div data-testid="data">{current.context.data}</div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  it('should work with the useActor hook', async () => {
+    render(<Fetcher onFetch={() => new Promise((res) => res('fake data'))} />);
+    const button = screen.getByText('Fetch');
+    fireEvent.click(button);
+    screen.getByText('Loading...');
+    await screen.findByText(/Success/);
+    const dataEl = screen.getByTestId('data');
+    expect(dataEl.textContent).toBe('fake data');
+  });
+
+  it('should work with the useActor hook (rehydrated state)', async () => {
+    render(
+      <Fetcher
+        onFetch={() => new Promise((res) => res('fake data'))}
+        persistedState={persistedSuccessFetchState}
+      />
+    );
+
+    await screen.findByText(/Success/);
+    const dataEl = screen.getByTestId('data');
+    expect(dataEl.textContent).toBe('persisted data');
+  });
+
+  it('should work with the useMachine hook (rehydrated state config)', async () => {
+    const persistedFetchStateConfig = JSON.parse(
+      JSON.stringify(persistedSuccessFetchState)
+    );
+    render(
+      <Fetcher
+        onFetch={() => new Promise((res) => res('fake data'))}
+        persistedState={persistedFetchStateConfig}
+      />
+    );
+
+    await screen.findByText(/Success/);
+    const dataEl = screen.getByTestId('data');
+    expect(dataEl.textContent).toBe('persisted data');
+  });
+
+  it('should provide the service', () => {
+    const Test = () => {
+      const [, , service] = useActor(fetchMachine);
+
+      if (!(service instanceof Actor)) {
+        throw new Error('service not instance of Interpreter');
+      }
+
+      return null;
+    };
+
+    render(<Test />);
+  });
+
+  it('should accept input and provide it to the context factory', () => {
+    const testMachine = createMachine({
+      types: {} as {
+        context: { foo: string; test: boolean };
+        input: { test: boolean };
+      },
+      context: (({ input }: any) => ({
+        foo: 'bar',
+        test: input.test ?? false
+      })) as any,
+      initial: 'idle',
+      states: {
+        idle: {}
+      }
+    });
+
+    const Test = () => {
+      const [state] = useActor(testMachine, {
+        input: { test: true }
       });
 
-    const Test = () => {
-      const [actor, setActor] = useState(createSimpleActor(42));
-      const [state] = useActor(actor, (a) => a.latestValue);
+      expect(state.context).toEqual({
+        foo: 'bar',
+        test: true
+      });
 
-      return (
-        <>
-          <div data-testid="state">{state}</div>
-          <button
-            data-testid="button"
-            onClick={() => setActor(createSimpleActor(100))}
-          ></button>
-        </>
-      );
+      return null;
     };
 
-    const { getByTestId } = render(<Test />);
-
-    const div = getByTestId('state');
-    const button = getByTestId('button');
-
-    expect(div.textContent).toEqual('42');
-    fireEvent.click(button);
-    expect(div.textContent).toEqual('100');
+    render(<Test />);
   });
 
-  it('send() should be stable', (done) => {
-    const fakeSubscribe = () => {
-      return {
-        unsubscribe: () => {
-          /* ... */
-        }
-      };
-    };
-    const noop = () => {
-      /* ... */
-    };
-    const firstActor = toActorRef({
-      send: noop,
-      subscribe: fakeSubscribe
-    });
-    const lastActor = toActorRef({
-      send: () => {
-        done();
-      },
-      subscribe: fakeSubscribe
-    });
-
-    const Test = () => {
-      const [actor, setActor] = useState(firstActor);
-      const [, send] = useActor(actor);
-
-      React.useEffect(() => {
-        setTimeout(() => {
-          // The `send` here is closed-in
-          act(() => send({ type: 'anything' }));
-        }, 10);
-      }, []); // Intentionally omit `send` from dependency array
-
-      return (
-        <>
-          <button
-            data-testid="button"
-            onClick={() => setActor(lastActor)}
-          ></button>
-        </>
-      );
-    };
-
-    const { getByTestId } = render(<Test />);
-
-    // At this point, `send` refers to the first (noop) actor
-
-    const button = getByTestId('button');
-    fireEvent.click(button);
-
-    // At this point, `send` refers to the last actor
-
-    // The effect will call the closed-in `send`, which originally
-    // was the reference to the first actor. Now that `send` is stable,
-    // it will always refer to the latest actor.
-  });
-
-  it('should also work with services', () => {
-    const counterMachine = createMachine<
-      { count: number },
-      { type: 'INC' } | { type: 'SOMETHING' }
-    >(
-      {
-        id: 'counter',
-        initial: 'active',
-        context: { count: 0 },
-        states: {
-          active: {
-            on: {
-              INC: { actions: assign({ count: (ctx) => ctx.count + 1 }) },
-              SOMETHING: { actions: 'doSomething' }
+  it('should not spawn actors until service is started', async () => {
+    const spawnMachine = createMachine({
+      types: {} as { context: { ref?: ActorRef<any, any> } },
+      id: 'spawn',
+      initial: 'start',
+      context: { ref: undefined } as any,
+      states: {
+        start: {
+          // entry: assign({
+          //   ref: ({ spawn }) =>
+          //     spawn(
+          //       createAsyncLogic(() => {
+          //         return new Promise((res) => res(42));
+          //       }),
+          //       { id: 'my-promise' }
+          //     )
+          // }),
+          entry: (_, enq) => ({
+            context: {
+              ref: enq.spawn(
+                createAsyncLogic({
+                  run: () => {
+                    return new Promise((res) => res(42));
+                  }
+                }),
+                { id: 'my-promise' }
+              )
             }
+          }),
+          on: {
+            'xstate.done.actor.my-promise': { target: 'success' }
           }
-        }
-      },
-      {
-        actions: {
-          doSomething: () => {
-            /* do nothing */
-          }
-        }
-      }
-    );
-    const counterService = interpret(counterMachine).start();
-
-    const Counter = () => {
-      const [state, send] = useActor(counterService);
-
-      return (
-        <div
-          data-testid="count"
-          onClick={() => {
-            send('INC');
-            // @ts-expect-error
-            send('FAKE');
-          }}
-        >
-          {state.context.count}
-        </div>
-      );
-    };
-
-    const { getAllByTestId } = render(
-      <>
-        <Counter />
-        <Counter />
-      </>
-    );
-
-    const countEls = getAllByTestId('count');
-
-    expect(countEls.length).toBe(2);
-
-    countEls.forEach((countEl) => {
-      expect(countEl.textContent).toBe('0');
-    });
-
-    act(() => {
-      counterService.send({ type: 'INC' });
-    });
-
-    countEls.forEach((countEl) => {
-      expect(countEl.textContent).toBe('1');
-    });
-  });
-
-  it('should work with initially deferred actors spawned in lazy context', () => {
-    const childMachine = createMachine({
-      initial: 'one',
-      states: {
-        one: {
-          on: { NEXT: 'two' }
-        },
-        two: {}
-      }
-    });
-
-    const machine = createMachine<{ ref: ActorRef<any> }>({
-      context: () => ({
-        ref: spawn(createMachineBehavior(childMachine))
-      }),
-      initial: 'waiting',
-      states: {
-        waiting: {
-          on: { TEST: 'success' }
         },
         success: {
           type: 'final'
@@ -494,29 +266,761 @@ describe('useActor', () => {
       }
     });
 
-    const App = () => {
-      const [state] = useMachine(machine);
-      const [childState, childSend] = useActor(state.context.ref);
+    const Spawner = () => {
+      const [current] = useActor(spawnMachine);
+
+      switch (current.value) {
+        case 'start':
+          return <span data-testid="start" />;
+        case 'success':
+          return <span data-testid="success" />;
+        default:
+          return null;
+      }
+    };
+
+    render(<Spawner />);
+
+    await screen.findByTestId('success');
+  });
+
+  it('actions should not use stale data in a builtin transition action', () => {
+    const { resolve, promise } = Promise.withResolvers<void>();
+
+    const toggleMachine = createMachine({
+      // types: {} as {
+      //   context: { latest: number };
+      //   events: { type: 'SET_LATEST' };
+      // },
+      context: {
+        latest: 0
+      } as any,
+      actions: {
+        getLatest: () => {}
+      },
+      on: {
+        SET_LATEST: ({ actions }, enq) => {
+          enq(actions.getLatest);
+        }
+      }
+    });
+
+    const Component = () => {
+      const [count, setCount] = useState(1);
+
+      const [, send] = useActor(
+        toggleMachine.provide({
+          actions: {
+            getLatest: () => {
+              expect(count).toBe(2);
+              resolve();
+            }
+          }
+        })
+      );
 
       return (
         <>
-          <div data-testid="child-state">{childState.value}</div>
           <button
-            data-testid="child-send"
-            onClick={() => childSend('NEXT')}
-          ></button>
+            data-testid="extbutton"
+            onClick={(_) => {
+              setCount(2);
+            }}
+          />
+          <button
+            data-testid="button"
+            onClick={(_) => {
+              send({ type: 'SET_LATEST' });
+            }}
+          />
         </>
       );
     };
 
-    const { getByTestId } = render(<App />);
+    render(<Component />);
 
-    const elState = getByTestId('child-state');
-    const elSend = getByTestId('child-send');
+    const button = screen.getByTestId('button');
+    const extButton = screen.getByTestId('extbutton');
+    fireEvent.click(extButton);
 
-    expect(elState.textContent).toEqual('one');
-    fireEvent.click(elSend);
+    fireEvent.click(button);
 
-    expect(elState.textContent).toEqual('two');
+    return promise;
+  });
+
+  it('actions should not use stale data in a builtin entry action', () => {
+    const { resolve, promise } = Promise.withResolvers<void>();
+
+    const toggleMachine = createMachine({
+      types: {} as { context: { latest: number }; events: { type: 'NEXT' } },
+      actions: {
+        getLatest: () => {}
+      },
+      context: {
+        latest: 0
+      } as any,
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            NEXT: { target: 'b' }
+          }
+        },
+        b: {
+          entry: ({ actions }, enq) => {
+            enq(actions.getLatest);
+          }
+        }
+      }
+    });
+
+    const Component = () => {
+      const [count, setCount] = useState(1);
+
+      const [, send] = useActor(
+        toggleMachine.provide({
+          actions: {
+            getLatest: () => {
+              expect(count).toBe(2);
+              resolve();
+            }
+          }
+        })
+      );
+
+      return (
+        <>
+          <button
+            data-testid="extbutton"
+            onClick={(_) => {
+              setCount(2);
+            }}
+          />
+          <button
+            data-testid="button"
+            onClick={(_) => {
+              send({ type: 'NEXT' });
+            }}
+          />
+        </>
+      );
+    };
+
+    render(<Component />);
+
+    const button = screen.getByTestId('button');
+    const extButton = screen.getByTestId('extbutton');
+    fireEvent.click(extButton);
+
+    fireEvent.click(button);
+
+    return promise;
+  });
+
+  it('actions should not use stale data in a custom entry action', () => {
+    const { resolve, promise } = Promise.withResolvers<void>();
+
+    const toggleMachine = createMachine({
+      // types: {} as {
+      //   events: { type: 'TOGGLE' };
+      // },
+      schemas: {
+        events: z.object({
+          type: z.literal('TOGGLE')
+        }) as any
+      },
+      actions: {
+        doAction: () => {}
+      },
+      initial: 'inactive',
+      states: {
+        inactive: {
+          on: { TOGGLE: { target: 'active' } }
+        },
+        active: {
+          entry: ({ actions }, enq) => {
+            enq(actions.doAction);
+          }
+        }
+      }
+    });
+
+    const Toggle = () => {
+      const [ext, setExt] = useState(false);
+
+      const doAction = React.useCallback(() => {
+        expect(ext).toBeTruthy();
+        resolve();
+      }, [ext]);
+
+      const [, send] = useActor(
+        toggleMachine.provide({
+          actions: {
+            doAction
+          }
+        })
+      );
+
+      return (
+        <>
+          <button
+            data-testid="extbutton"
+            onClick={(_) => {
+              setExt(true);
+            }}
+          />
+          <button
+            data-testid="button"
+            onClick={(_) => {
+              send({ type: 'TOGGLE' });
+            }}
+          />
+        </>
+      );
+    };
+
+    render(<Toggle />);
+
+    const button = screen.getByTestId('button');
+    const extButton = screen.getByTestId('extbutton');
+    fireEvent.click(extButton);
+
+    fireEvent.click(button);
+
+    return promise;
+  });
+
+  it('should successfully spawn actors from the lazily declared context', () => {
+    let childSpawned = false;
+
+    const machine = createMachine({
+      context: ({ spawn }) => ({
+        ref: spawn(
+          createCallbackLogic(() => {
+            childSpawned = true;
+          })
+        )
+      })
+    });
+
+    const App = () => {
+      useActor(machine);
+      return null;
+    };
+
+    render(<App />);
+
+    expect(childSpawned).toBe(true);
+  });
+
+  it('should be able to use an action provided outside of React', () => {
+    let actionCalled = false;
+
+    const machine = createMachine({
+      on: {
+        EV: (_, enq) => {
+          enq(() => (actionCalled = true));
+        }
+      }
+    });
+
+    const App = () => {
+      const [_state, send] = useActor(machine);
+      React.useEffect(() => {
+        send({ type: 'EV' });
+      }, []);
+      return null;
+    };
+
+    render(<App />);
+
+    expect(actionCalled).toBe(true);
+  });
+
+  it('should be able to use a guard provided outside of React', () => {
+    let guardCalled = false;
+
+    const machine = createMachine({
+      initial: 'a',
+      guards: {
+        isAwesome: () => true
+      },
+      states: {
+        a: {
+          on: {
+            // EV: {
+            //   guard: 'isAwesome',
+            //   target: 'b'
+            // }
+            EV: ({ guards }) => {
+              if (guards.isAwesome()) {
+                return {
+                  target: 'b'
+                };
+              }
+            }
+          }
+        },
+        b: {}
+      }
+    }).provide({
+      guards: {
+        isAwesome: () => {
+          guardCalled = true;
+          return true;
+        }
+      }
+    });
+
+    const App = () => {
+      const [_state, send] = useActor(machine);
+      React.useEffect(() => {
+        send({ type: 'EV' });
+      }, []);
+      return null;
+    };
+
+    render(<App />);
+
+    expect(guardCalled).toBe(true);
+  });
+
+  it('should be able to use a service provided outside of React', () => {
+    let serviceCalled = false;
+
+    const machine = createMachine({
+      actorSources: {
+        foo: createAsyncLogic({
+          run: () => {
+            serviceCalled = true;
+            return Promise.resolve();
+          }
+        })
+      },
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            EV: { target: 'b' }
+          }
+        },
+        b: {
+          invoke: {
+            // src: 'foo'
+            src: ({ actorSources }) => actorSources.foo
+          }
+        }
+      }
+    });
+
+    const App = () => {
+      const [_state, send] = useActor(machine);
+      React.useEffect(() => {
+        send({ type: 'EV' });
+      }, []);
+      return null;
+    };
+
+    render(<App />);
+
+    expect(serviceCalled).toBe(true);
+  });
+
+  it('should be able to use a delay provided outside of React', () => {
+    vi.useFakeTimers();
+
+    const machine =
+      // setup({
+      //   delays: {
+      //     myDelay: () => {
+      //       return 300;
+      //     }
+      //   }
+      // }).
+      createMachine({
+        delays: {
+          myDelay: () => {
+            return 300;
+          }
+        },
+        initial: 'a',
+        states: {
+          a: {
+            on: {
+              EV: { target: 'b' }
+            }
+          },
+          b: {
+            after: {
+              myDelay: { target: 'c' }
+            }
+          },
+          c: {}
+        }
+      });
+
+    const App = () => {
+      const [state, send] = useActor(machine);
+      return (
+        <>
+          <div data-testid="result">{state.value as any}</div>
+          <button onClick={() => send({ type: 'EV' })} />
+        </>
+      );
+    };
+
+    render(<App />);
+
+    const btn = screen.getByRole('button');
+    fireEvent.click(btn);
+
+    expect(screen.getByTestId('result').textContent).toBe('b');
+
+    act(() => {
+      vi.advanceTimersByTime(310);
+    });
+
+    expect(screen.getByTestId('result').textContent).toBe('c');
+  });
+
+  it('should not use stale data in a guard', () => {
+    const machine = createMachine({
+      guards: {
+        isAwesome: () => false
+      },
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            // EV: {
+            //   guard: 'isAwesome',
+            //   target: 'b'
+            // }
+            EV: ({ guards }) => {
+              if (guards.isAwesome()) {
+                return {
+                  target: 'b'
+                };
+              }
+            }
+          }
+        },
+        b: {}
+      }
+    });
+
+    const App = ({ isAwesome }: { isAwesome: boolean }) => {
+      const [state, send] = useActor(
+        machine.provide({
+          guards: {
+            isAwesome: (() => isAwesome) as any
+          }
+        })
+      );
+      return (
+        <>
+          <div data-testid="result">{state.value as any}</div>
+          <button onClick={() => send({ type: 'EV' })} />
+        </>
+      );
+    };
+
+    const { rerender } = render(<App isAwesome={false} />);
+    rerender(<App isAwesome={true} />);
+
+    const btn = screen.getByRole('button');
+    fireEvent.click(btn);
+
+    expect(screen.getByTestId('result').textContent).toBe('b');
+  });
+
+  it('custom data should be available right away for the invoked actor', () => {
+    const childMachine = createMachine({
+      // types: {
+      //   context: {} as { value: number }
+      // },
+      schemas: {
+        context: z.object({
+          value: z.number()
+        }),
+        input: z.object({
+          value: z.number()
+        })
+      },
+      initial: 'initial',
+      context: ({ input }) => {
+        return {
+          value: input.value
+        };
+      },
+      states: {
+        initial: {}
+      }
+    });
+
+    const machine = createMachine({
+      // types: {} as {
+      //   actorSources: {
+      //     src: 'child';
+      //     logic: typeof childMachine;
+      //     id: 'test';
+      //   };
+      // },
+      actorSources: {
+        child: childMachine
+      },
+      initial: 'active',
+      states: {
+        active: {
+          invoke: {
+            // src: 'child',
+            src: ({ actorSources }: any) => actorSources.child,
+            id: 'test',
+            input: { value: 42 }
+          } as any
+        }
+      }
+    });
+
+    const Test = () => {
+      const [state] = useActor(machine);
+      const childState = useSelector(state.children.test!, (s) => s);
+
+      expect(childState.context.value).toBe(42);
+
+      return null;
+    };
+
+    render(<Test />);
+  });
+
+  // https://github.com/statelyai/xstate/issues/1334
+  it('delayed transitions should work when initializing from a rehydrated state', () => {
+    vi.useFakeTimers();
+    const testMachine = createMachine({
+      // types: {} as {
+      //   events: {
+      //     type: 'START';
+      //   };
+      // },
+      schemas: {
+        events: z.object({
+          type: z.literal('START')
+        }) as any
+      },
+      id: 'app',
+      initial: 'idle',
+      states: {
+        idle: {
+          on: {
+            START: { target: 'doingStuff' }
+          }
+        },
+        doingStuff: {
+          id: 'doingStuff',
+          after: {
+            100: { target: 'idle' }
+          }
+        }
+      }
+    });
+
+    const actorRef = createActor(testMachine).start();
+    const persistedState = JSON.stringify(actorRef.getPersistedSnapshot());
+    actorRef.stop();
+
+    let currentState: SnapshotFrom<typeof testMachine>;
+
+    const Test = () => {
+      const [state, send] = useActor(testMachine, {
+        snapshot: JSON.parse(persistedState)
+      });
+
+      currentState = state;
+
+      return (
+        <button
+          onClick={() => send({ type: 'START' })}
+          data-testid="button"
+        ></button>
+      );
+    };
+
+    render(<Test />);
+
+    const button = screen.getByTestId('button');
+
+    fireEvent.click(button);
+    act(() => {
+      vi.advanceTimersByTime(110);
+    });
+
+    expect(currentState!.matches('idle')).toBe(true);
+  });
+
+  it('should not miss initial synchronous updates', () => {
+    const m = createMachine({
+      // types: {} as { context: { count: number } },
+      schemas: {
+        context: z.object({
+          count: z.number()
+        })
+      },
+      initial: 'idle',
+      context: {
+        count: 0
+      },
+      // entry: [assign({ count: 1 }), raise({ type: 'INC' })],
+      entry: (_, enq) => {
+        enq.raise({ type: 'INC' });
+        return {
+          context: {
+            count: 1
+          }
+        };
+      },
+      on: {
+        // INC: {
+        //   actions: [
+        //     assign({ count: ({ context }) => context.count + 1 }),
+        //     raise({ type: 'UNHANDLED' })
+        //   ]
+        // }
+        INC: ({ context }, enq) => {
+          enq.raise({ type: 'UNHANDLED' });
+          return {
+            context: {
+              count: context.count + 1
+            }
+          };
+        }
+      },
+      states: {
+        idle: {}
+      }
+    });
+
+    const App = () => {
+      const [state] = useActor(m);
+      return <>{state.context.count}</>;
+    };
+
+    const { container } = render(<App />);
+
+    expect(container.textContent).toBe('2');
+  });
+
+  // v6: In strict mode, the stop/restart cycle doesn't restart invoked
+  // children (observable actors), so the subscription is lost
+  it('should work with `onSnapshot`', () => {
+    const subject = new BehaviorSubject(0);
+
+    const spy = vi.fn();
+
+    const machine = createMachine({
+      invoke: {
+        src: createObservableLogic(() => subject),
+        // onSnapshot: {
+        //   actions: [({ event }) => spy((event.snapshot as any).context)]
+        // }
+        onSnapshot: ({ event }) => {
+          spy((event.snapshot as any).context);
+        }
+      }
+    });
+
+    const App = () => {
+      useActor(machine);
+      return null;
+    };
+
+    render(<App />);
+
+    spy.mockClear();
+
+    subject.next(42);
+    subject.next(100);
+
+    expect(spy.mock.calls).toEqual([[42], [100]]);
+  });
+
+  it('should execute a delayed transition of the initial state', async () => {
+    const machine = createMachine({
+      initial: 'one',
+      states: {
+        one: {
+          after: {
+            10: { target: 'two' }
+          }
+        },
+        two: {}
+      }
+    });
+
+    const App = () => {
+      const [state] = useActor(machine);
+      return <>{state.value}</>;
+    };
+
+    const { container } = render(<App />);
+
+    expect(container.textContent).toBe('one');
+
+    await act(async () => {
+      await sleep(10);
+    });
+
+    expect(container.textContent).toBe('two');
+  });
+
+  // v6: In strict mode, the stop/restart cycle doesn't restart invoked
+  // children (promise actors), so the error never propagates
+  it('should throw an error to an error boundary when the actor reaches an error state', async () => {
+    const errorMessage = 'test_useActor_error';
+
+    const machine = createMachine({
+      initial: 'loading',
+      states: {
+        loading: {
+          invoke: {
+            src: createAsyncLogic({
+              run: () => Promise.reject(new Error(errorMessage))
+            })
+          }
+        }
+      }
+    });
+
+    class ErrorBoundary extends React.Component<
+      { children: React.ReactNode },
+      { error: Error | null }
+    > {
+      state = { error: null as Error | null };
+      static getDerivedStateFromError(error: Error) {
+        return { error };
+      }
+      render() {
+        if (this.state.error) {
+          return <div data-testid="error">{this.state.error.message}</div>;
+        }
+        return this.props.children;
+      }
+    }
+
+    const App = () => {
+      const [state] = useActor(machine);
+      return <div data-testid="value">{String(state.value)}</div>;
+    };
+
+    console.error = vi.fn();
+
+    render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
+
+    await screen.findByTestId('error');
+    expect(screen.getByTestId('error').textContent).toBe(errorMessage);
   });
 });

@@ -1,79 +1,96 @@
-import { matchesState } from './utils';
-import { mapState } from './mapState';
-import { StateNode } from './StateNode';
-import { State } from './State';
-import { createMachine } from './Machine';
-import {
-  raise,
-  send,
-  sendParent,
-  sendUpdate,
-  log,
-  cancel,
-  stop,
-  assign,
-  after,
-  done,
-  respond,
-  doneInvoke,
-  forwardTo,
-  escalate,
-  choose,
-  pure
-} from './actions';
-import { interpret, Interpreter, InterpreterStatus } from './interpreter';
-import { matchState } from './match';
-export { StateMachine as MachineNode } from './StateMachine';
-export { SimulatedClock } from './SimulatedClock';
+export * from './actors/index.ts';
+export { assertEvent } from './assert.ts';
 export {
-  spawn,
-  spawnFrom,
-  spawnMachine,
-  spawnPromise,
-  spawnObservable,
-  spawnCallback
-} from './actor';
-export { createSchema } from './schema';
-
-const actions = {
-  raise,
-  send,
-  sendParent,
-  sendUpdate,
-  log,
-  cancel,
-  stop,
-  assign,
-  after,
-  done,
-  respond,
-  forwardTo,
-  escalate,
-  choose,
-  pure
-};
-
+  Actor,
+  createActor,
+  type RequiredActorOptionsKeys as RequiredActorOptionsKeys
+} from './createActor.ts';
+export { createMachine, createStateConfig } from './createMachine.ts';
 export {
-  StateNode,
-  State,
+  createFSM,
+  type FSMActorLogic,
+  type FSMConfig,
+  type FSMSnapshot
+} from './fsm.ts';
+export { createMachineFromConfig } from './createMachineFromConfig.ts';
+export type {
+  ActionJSON,
+  GuardJSON,
+  InvokeJSON,
+  MachineJSON,
+  StateNodeJSON,
+  TransitionJSON
+} from './createMachineFromConfig.ts';
+export {
+  machineConfigToJSON,
+  serializeMachine,
+  type CodeExpression
+} from './serialize.ts';
+export { mapState } from './mapState.ts';
+export {
+  types,
+  isTypeSchema,
+  type StandardSchemaV1,
+  type TypeSchema
+} from './schema.types.ts';
+export { createSystem, setup } from './setup.ts';
+export type {
+  AnySetupConfig,
+  SetupConfig,
+  SetupReturn,
+  SetupReturnFromConfig,
+  SetupSchemas,
+  SystemActorMap,
+  SystemConfig,
+  SystemRuntime,
+  SetupStateSchema,
+  SetupStateSchemas
+} from './setup.ts';
+export { getInitialSnapshot, getNextSnapshot } from './getNextSnapshot.ts';
+export type {
+  InspectionEvent,
+  ActorInspectionEvent,
+  TransitionInspectionEvent,
+  ActionRecord,
+  SentRecord
+} from './inspection.ts';
+export { SimulatedClock } from './SimulatedClock.ts';
+export { type Spawner } from './spawn.ts';
+export { isMachineSnapshot, type MachineSnapshot } from './State.ts';
+export { StateMachine } from './StateMachine.ts';
+export { StateNode } from './StateNode.ts';
+export { getStateNodes } from './stateUtils.ts';
+export type { ActorSystem, AnyActorSystem } from './system.ts';
+export { toPromise } from './toPromise.ts';
+export * from './types.ts';
+export type {
+  Next_MachineConfig as MachineConfig,
+  Next_StateNodeConfig as StateNodeConfig,
+  Next_InvokeConfig as InvokeConfig,
+  Next_TransitionConfigOrTarget as TransitionConfigOrTarget,
+  Implementations,
+  InferEvents,
+  WidenLiterals
+} from './types.v6.ts';
+export {
+  getAllOwnEventDescriptors as __unsafe_getAllOwnEventDescriptors,
   matchesState,
-  mapState,
-  actions,
-  assign,
-  send,
-  sendParent,
-  sendUpdate,
-  forwardTo,
-  interpret,
-  Interpreter,
-  InterpreterStatus,
-  matchState,
-  doneInvoke,
-  createMachine
-};
+  checkStateIn,
+  pathToStateValue,
+  toObserver
+} from './utils.ts';
+export {
+  transition,
+  initialTransition,
+  getMicrosteps,
+  getInitialMicrosteps,
+  getNextTransitions
+} from './transition.ts';
+export { isBuiltInExecutableAction } from './transitionActions.ts';
+export { waitFor } from './waitFor.ts';
 
-export * from './types';
-
-// TODO: decide from where those should be exported
-export { pathToStateValue, flatten, keys } from './utils';
-export { getStateNodes } from './stateUtils';
+declare global {
+  interface SymbolConstructor {
+    readonly observable: symbol;
+  }
+}

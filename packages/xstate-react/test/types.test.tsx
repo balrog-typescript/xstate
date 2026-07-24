@@ -1,68 +1,12 @@
-import * as React from 'react';
 import { render } from '@testing-library/react';
+import { ActorRefFrom, createMachine } from 'xstate';
 import {
-  interpret,
-  assign,
-  createMachine,
-  ActorRefFrom,
-  spawnMachine
-} from 'xstate';
-import { useService, useMachine, useActor } from '../src';
-
-describe('useService', () => {
-  it('should accept spawned machine', () => {
-    interface TodoCtx {
-      completed: boolean;
-    }
-    interface TodosCtx {
-      todos: Array<ActorRefFrom<typeof todoMachine>>;
-    }
-
-    const todoMachine = createMachine<TodoCtx>({
-      context: {
-        completed: false
-      },
-      initial: 'uncompleted',
-      states: {
-        uncompleted: {
-          on: {
-            COMPLETE: 'done'
-          }
-        },
-        done: {
-          entry: assign<TodoCtx>({ completed: true })
-        }
-      }
-    });
-
-    const todosMachine = createMachine<TodosCtx, { type: 'CREATE' }>({
-      context: { todos: [] },
-      initial: 'working',
-      states: { working: {} },
-      on: {
-        CREATE: {
-          actions: assign((ctx) => ({
-            ...ctx,
-            todos: [...ctx.todos, spawnMachine(todoMachine)]
-          }))
-        }
-      }
-    });
-
-    const service = interpret(todosMachine).start();
-
-    const Todo = ({ index }: { index: number }) => {
-      const [current] = useService(service);
-      const todoRef = current.context.todos[index];
-      const [todoCurrent] = useActor(todoRef);
-      return <>{todoCurrent.context.completed}</>;
-    };
-
-    service.send('CREATE');
-
-    render(<Todo index={0} />);
-  });
-});
+  useActor,
+  useActorRef,
+  useMachine,
+  useSelector
+} from '../src/index.ts';
+import z from 'zod';
 
 describe('useMachine', () => {
   interface YesNoContext {
@@ -73,11 +17,16 @@ describe('useMachine', () => {
     type: 'YES';
   }
 
-  type YesNoTypestate =
-    | { value: 'no'; context: { value: undefined } }
-    | { value: 'yes'; context: { value: number } };
-
-  const yesNoMachine = createMachine<YesNoContext, YesNoEvent, YesNoTypestate>({
+  const yesNoMachine = createMachine({
+    // types: {} as { context: YesNoContext; events: YesNoEvent },
+    schemas: {
+      context: z.object({
+        value: z.number().optional()
+      }),
+      events: z.object({
+        type: z.literal('YES')
+      }) as any
+    },
     context: {
       value: undefined
     },
@@ -85,33 +34,13 @@ describe('useMachine', () => {
     states: {
       no: {
         on: {
-          YES: 'yes'
+          YES: { target: 'yes' }
         }
       },
       yes: {
         type: 'final'
       }
     }
-  });
-
-  it('should preserve typestate information.', () => {
-    const YesNo = () => {
-      const [state] = useMachine(yesNoMachine);
-
-      if (state.matches('no')) {
-        const undefinedValue: undefined = state.context.value;
-
-        return <span>{undefinedValue ? 'Yes' : 'No'}</span>;
-      } else if (state.matches('yes')) {
-        const numericValue: number = state.context.value;
-
-        return <span>{numericValue ? 'Yes' : 'No'}</span>;
-      }
-
-      return <span>No</span>;
-    };
-
-    render(<YesNo />);
   });
 
   it('state should not become never after checking state with matches', () => {
@@ -128,48 +57,59 @@ describe('useMachine', () => {
     render(<YesNo />);
   });
 
-  // Example from: https://github.com/davidkpiano/xstate/discussions/1534
+  // Example from: https://github.com/statelyai/xstate/discussions/1534
   it('spawned actors should be typed correctly', () => {
-    const child = createMachine<{ bar: number }, { type: 'FOO'; data: number }>(
-      {
-        id: 'myActor',
-        context: {
-          bar: 1
-        },
-        initial: 'ready',
-        states: {
-          ready: {}
-        }
-      }
-    );
-
-    const m = createMachine<{ actor: ActorRefFrom<typeof child> | null }>(
-      {
-        initial: 'ready',
-        context: {
-          actor: null
-        },
-        states: {
-          ready: {
-            entry: 'spawnActor'
-          }
-        }
+    const child = createMachine({
+      // types: {} as {
+      //   context: { bar: number };
+      //   events: { type: 'FOO'; data: number };
+      // },
+      schemas: {
+        context: z.object({
+          bar: z.number()
+        }),
+        events: z.object({
+          type: z.literal('FOO'),
+          data: z.number()
+        }) as any
       },
-      {
-        actions: {
-          spawnActor: assign({
-            actor: () => spawnMachine(child)
+      id: 'myActor',
+      context: {
+        bar: 1
+      },
+      initial: 'ready',
+      states: {
+        ready: {}
+      }
+    });
+
+    const m = createMachine({
+      initial: 'ready',
+      schemas: {
+        context: z.object({
+          actor: z.custom<ActorRefFrom<typeof child>>().nullable()
+        })
+      },
+      context: {
+        actor: null
+      },
+      states: {
+        ready: {
+          entry: (_, enq) => ({
+            context: {
+              actor: enq.spawn(child)
+            }
           })
         }
       }
-    );
+    });
 
     interface Props {
       myActor: ActorRefFrom<typeof child>;
     }
 
     function Element({ myActor }: Props) {
-      const [current, send] = useActor(myActor);
+      const current = useSelector(myActor, (state) => state);
       const bar: number = current.context.bar;
 
       // @ts-expect-error
@@ -178,7 +118,9 @@ describe('useMachine', () => {
       return (
         <>
           {bar}
-          <div onClick={() => send({ type: 'FOO', data: 1 })}>click</div>
+          <div onClick={() => myActor.send({ type: 'FOO', data: 1 } as any)}>
+            click
+          </div>
         </>
       );
     }
@@ -199,4 +141,106 @@ describe('useMachine', () => {
 
     noop(App);
   });
+});
+
+describe('useActor', () => {
+  it('should require input to be specified when defined', () => {
+    const withInputMachine = createMachine({
+      // types: {} as { input: { value: number } },
+      schemas: {
+        input: z.object({
+          value: z.number()
+        })
+      },
+      initial: 'idle',
+      states: {
+        idle: {}
+      }
+    });
+
+    const Component = () => {
+      const _ = useActor(withInputMachine);
+      return <></>;
+    };
+
+    render(<Component />);
+  });
+
+  it('should not require input when not defined', () => {
+    const noInputMachine = createMachine({
+      // types: {} as {},
+      initial: 'idle',
+      states: {
+        idle: {}
+      }
+    });
+    const Component = () => {
+      const _ = useActor(noInputMachine);
+      return <></>;
+    };
+
+    render(<Component />);
+  });
+});
+
+describe('useActorRef', () => {
+  it('should require input to be specified when defined', () => {
+    const withInputMachine = createMachine({
+      // types: {} as { input: { value: number } },
+      schemas: {
+        input: z.object({
+          value: z.number()
+        })
+      },
+      initial: 'idle',
+      states: {
+        idle: {}
+      }
+    });
+
+    const Component = () => {
+      const _ = useActorRef(withInputMachine);
+      return <></>;
+    };
+
+    render(<Component />);
+  });
+
+  it('should not require input when not defined', () => {
+    const noInputMachine = createMachine({
+      // types: {} as {},
+      initial: 'idle',
+      states: {
+        idle: {}
+      }
+    });
+
+    const Component = () => {
+      const _ = useActorRef(noInputMachine);
+      return <></>;
+    };
+
+    render(<Component />);
+  });
+});
+
+it('useMachine types work for machines with a specified id and state with an after property #5008', () => {
+  // https://github.com/statelyai/xstate/issues/5008
+  const cheatCodeMachine = createMachine({
+    id: 'cheatCodeMachine',
+    initial: 'disabled',
+    states: {
+      disabled: {
+        after: {}
+      },
+      enabled: {}
+    }
+  });
+
+  function _useCheatCode(): boolean {
+    // This should typecheck without errors
+    const [state] = useMachine(cheatCodeMachine);
+
+    return state.matches('enabled');
+  }
 });

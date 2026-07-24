@@ -1,30 +1,42 @@
-import { render, fireEvent, waitFor } from '@testing-library/vue';
-import UseMachine from './UseMachine.vue';
+import { fireEvent, render, waitFor } from '@testing-library/vue';
+import { AsyncActorLogic, createActor, createMachine } from 'xstate';
 import UseMachineNoExtraOptions from './UseMachine-no-extra-options.vue';
-import { createMachine, assign, doneInvoke } from 'xstate';
+import UseMachine from './UseMachine.vue';
 
-describe('useMachine composition function', () => {
+describe('useMachine', () => {
   const context = {
     data: undefined
   };
-  const fetchMachine = createMachine<typeof context>({
+  const fetchMachine = createMachine({
     id: 'fetch',
+    types: {} as {
+      actorSources: {
+        src: 'fetchData';
+        logic: AsyncActorLogic<string>;
+      };
+    },
     initial: 'idle',
-    context,
+    context: context as any,
     states: {
       idle: {
-        on: { FETCH: 'loading' }
+        on: { FETCH: { target: 'loading' } }
       },
       loading: {
         invoke: {
           id: 'fetchData',
           src: 'fetchData',
-          onDone: {
-            target: 'success',
-            actions: assign({
-              data: (_, e) => e.data
-            }),
-            guard: (_, e) => e.data.length
+          onDone: ({ context, event, guards, actions }, enq) => {
+            if (
+              !(({ event }: any) => !!event.output.length)({ context, event })
+            ) {
+              return;
+            }
+            return {
+              target: 'success',
+              context: {
+                data: event.output
+              }
+            };
           }
         }
       },
@@ -34,10 +46,24 @@ describe('useMachine composition function', () => {
     }
   });
 
-  const persistedFetchState = fetchMachine.transition(
-    'loading',
-    doneInvoke('fetchData', 'persisted data')
-  );
+  const actorRef = createActor(
+    fetchMachine.provide({
+      actorSources: {
+        fetchData: createMachine({
+          initial: 'done',
+          states: {
+            done: {
+              type: 'final'
+            }
+          },
+          output: 'persisted data'
+        }) as any
+      }
+    })
+  ).start();
+  actorRef.send({ type: 'FETCH' });
+
+  const persistedFetchState = actorRef.getPersistedSnapshot();
 
   it('should work with a component ', async () => {
     const { getByText, getByTestId } = render(UseMachine as any);

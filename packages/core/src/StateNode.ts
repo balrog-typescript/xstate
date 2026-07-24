@@ -1,49 +1,59 @@
+import isDevelopment from '#is-development';
+import { NULL_EVENT, STATE_DELIMITER } from './constants.ts';
+import { createInvokeTimeoutEvent } from './eventUtils.ts';
+import { memo } from './memo.ts';
 import {
-  getEventType,
-  mapValues,
-  flatten,
-  toArray,
-  keys,
-  isString,
-  toInvokeConfig,
-  toInvokeSource,
-  isFunction
-} from './utils';
+  evaluateCandidate,
+  formatTransition,
+  getCandidates,
+  getDelayedTransitions
+} from './stateUtils.ts';
 import type {
-  Event,
-  Transitions,
-  EventObject,
-  HistoryStateNodeConfig,
-  StateNodeDefinition,
-  TransitionDefinition,
   DelayedTransitionDefinition,
-  StateNodeConfig,
-  StatesDefinition,
-  StateNodesConfig,
-  FinalStateNodeConfig,
-  InvokeDefinition,
-  ActionObject,
-  Mapper,
-  PropertyMapper,
-  NullEvent,
-  SCXML,
-  TransitionDefinitionMap,
+  EventObject,
   InitialTransitionDefinition,
-  MachineContext
-} from './types';
-import type { State } from './State';
-import * as actionTypes from './actionTypes';
-import { toActionObject } from './actions';
-import { formatInitialTransition } from './stateUtils';
+  MachineContext,
+  Mapper,
+  StateNodesConfig,
+  TransitionDefinition,
+  TransitionDefinitionMap,
+  AnyStateMachine,
+  AnyStateNodeConfig,
+  NonReducibleUnknown,
+  EventDescriptor,
+  AnyActor,
+  AnyStateNode,
+  AnyEventObject,
+  AnyAction,
+  AnyTransitionConfig,
+  AnyTransitionDefinition,
+  AnyMachineSnapshot,
+  AnyInvokeDefinition
+} from './types.ts';
 import {
-  getDelayedTransitions,
-  formatTransitions,
-  getCandidates
-} from './stateUtils';
-import { evaluateGuard } from './guards';
-import type { StateMachine } from './StateMachine';
+  createInvokeId,
+  mapValues,
+  toArray,
+  toTransitionConfigArray
+} from './utils.ts';
 
 const EMPTY_OBJECT = {};
+const CHOICE_CONFIG_KEYS = [
+  'invoke',
+  'after',
+  'on',
+  'entry',
+  'exit',
+  'always',
+  'states',
+  'initial',
+  'onDone',
+  'timeout',
+  'onTimeout',
+  'history',
+  'target',
+  'output'
+] as const;
 
 interface StateNodeOptions<
   TContext extends MachineContext,
@@ -51,7 +61,7 @@ interface StateNodeOptions<
 > {
   _key: string;
   _parent?: StateNode<TContext, TEvent>;
-  _machine: StateMachine<TContext, TEvent>;
+  _machine: AnyStateMachine;
 }
 
 export class StateNode<
@@ -59,147 +69,129 @@ export class StateNode<
   TEvent extends EventObject = EventObject
 > {
   /**
-   * The relative key of the state node, which represents its location in the overall state value.
+   * The relative key of the state node, which represents its location in the
+   * overall state value.
    */
   public key: string;
-  /**
-   * The unique ID of the state node.
-   */
+  /** The unique ID of the state node. */
   public id: string;
   /**
    * The type of this state node:
    *
-   *  - `'atomic'` - no child state nodes
-   *  - `'compound'` - nested child state nodes (XOR)
-   *  - `'parallel'` - orthogonal nested child state nodes (AND)
-   *  - `'history'` - history state node
-   *  - `'final'` - final state node
+   * - `'atomic'` - no child state nodes
+   * - `'compound'` - nested child state nodes (XOR)
+   * - `'parallel'` - orthogonal nested child state nodes (AND)
+   * - `'history'` - history state node
+   * - `'choice'` - pure routing decision state node
+   * - `'final'` - final state node
    */
-  public type: 'atomic' | 'compound' | 'parallel' | 'final' | 'history';
-  /**
-   * The string path from the root machine node to this node.
-   */
+  public type:
+    | 'atomic'
+    | 'compound'
+    | 'parallel'
+    | 'final'
+    | 'history'
+    | 'choice';
+  /** The string path from the root machine node to this node. */
   public path: string[];
-  /**
-   * The child state nodes.
-   */
-  public states: StateNodesConfig<TContext, TEvent>;
+  /** The child state nodes. */
+  public states: StateNodesConfig<any, any>;
   /**
    * The type of history on this state node. Can be:
    *
-   *  - `'shallow'` - recalls only top-level historical state value
-   *  - `'deep'` - recalls historical state value at all levels
+   * - `'shallow'` - recalls only top-level historical state value
+   * - `'deep'` - recalls historical state value at all levels
    */
   public history: false | 'shallow' | 'deep';
+  /** The action(s) to be executed upon entering the state node. */
+  public entry: AnyAction | undefined;
+  /** The action(s) to be executed upon exiting the state node. */
+  public exit: AnyAction | undefined;
+  /** The parent state node. */
+  public parent?: StateNode<any, any>;
+  /** The root machine node. */
+  public machine: AnyStateMachine;
   /**
-   * The action(s) to be executed upon entering the state node.
-   */
-  public entry: Array<ActionObject<TContext, TEvent>>;
-  /**
-   * The action(s) to be executed upon exiting the state node.
-   */
-  public exit: Array<ActionObject<TContext, TEvent>>;
-  /**
-   * The parent state node.
-   */
-  public parent?: StateNode<TContext, TEvent>;
-  /**
-   * The root machine node.
-   */
-  public machine: StateMachine<TContext, TEvent>;
-  /**
-   * The meta data associated with this state node, which will be returned in State instances.
+   * The meta data associated with this state node, which will be returned in
+   * State instances.
    */
   public meta?: any;
   /**
-   * The data sent with the "done.state._id_" event if this is a final state node.
+   * The output data sent with the "xstate.done.state._id_" event if this is a
+   * final state node.
    */
-  public doneData?:
-    | Mapper<TContext, TEvent, any>
-    | PropertyMapper<TContext, TEvent, any>;
+  public output?:
+    | Mapper<MachineContext, EventObject, unknown, EventObject>
+    | NonReducibleUnknown;
+
   /**
-   * The order this state node appears. Corresponds to the implicit SCXML document order.
+   * The order this state node appears. Corresponds to the implicit document
+   * order.
    */
   public order: number = -1;
 
   public description?: string;
 
-  // TODO: make private
-  public __cache = {
-    events: undefined as Array<TEvent['type']> | undefined,
-    on: undefined as TransitionDefinitionMap<TContext, TEvent> | undefined,
-    transitions: undefined as
-      | Array<TransitionDefinition<TContext, TEvent>>
-      | undefined,
-    candidates: {} as {
-      [K in TEvent['type'] | NullEvent['type'] | '*']:
-        | Array<
-            TransitionDefinition<
-              TContext,
-              K extends TEvent['type']
-                ? Extract<TEvent, { type: K }>
-                : EventObject
-            >
-          >
-        | undefined;
-    },
-    delayedTransitions: undefined as
-      | Array<DelayedTransitionDefinition<TContext, TEvent>>
-      | undefined,
-    invoke: undefined as Array<InvokeDefinition<TContext, TEvent>> | undefined
-  };
-
-  private __initial?: InitialTransitionDefinition<TContext, TEvent>;
-
   public tags: string[] = [];
+  public transitions!: Map<string, AnyTransitionDefinition[]>;
+  public always?: Array<AnyTransitionDefinition>;
+  public invoke: Array<AnyInvokeDefinition>;
+  public on!: TransitionDefinitionMap<any, any>;
+  public after!: Array<DelayedTransitionDefinition<any, any>>;
+  public events!: Array<EventDescriptor<any>>;
+  public ownEvents!: Array<EventDescriptor<any>>;
 
   constructor(
-    /**
-     * The raw config used to create the machine.
-     */
-    public config: StateNodeConfig<TContext, TEvent>,
+    /** The raw config used to create the machine. */
+    public config: AnyStateNodeConfig,
     options: StateNodeOptions<TContext, TEvent>
   ) {
     this.parent = options._parent;
-    this.key = this.config.key || options._key;
+    this.key = options._key;
     this.machine = options._machine;
     this.path = this.parent ? this.parent.path.concat(this.key) : [];
+    const firstStateKey = this.config.states
+      ? Object.keys(this.config.states)[0]
+      : undefined;
     this.id =
-      this.config.id ||
-      [this.machine.key, ...this.path].join(this.machine.delimiter);
+      this.config.id || [this.machine.id, ...this.path].join(STATE_DELIMITER);
     this.type =
       this.config.type ||
-      (this.config.states && keys(this.config.states).length
+      (firstStateKey !== undefined
         ? 'compound'
         : this.config.history
-        ? 'history'
-        : 'atomic');
+          ? 'history'
+          : 'atomic');
     this.description = this.config.description;
+
+    validateStateNodeConfig(this);
 
     this.order = this.machine.idMap.size;
     this.machine.idMap.set(this.id, this);
 
-    this.states = (this.config.states
-      ? mapValues(
-          this.config.states,
-          (stateConfig: StateNodeConfig<TContext, TEvent>, key) => {
-            const stateNode = new StateNode(stateConfig, {
-              _parent: this,
-              _key: key as string,
-              _machine: this.machine
-            });
-            return stateNode;
-          }
-        )
-      : EMPTY_OBJECT) as StateNodesConfig<TContext, TEvent>;
+    this.states = (
+      this.config.states
+        ? mapValues(
+            this.config.states,
+            (stateConfig: AnyStateNodeConfig, key) => {
+              const stateNode = new StateNode(stateConfig, {
+                _parent: this,
+                _key: key,
+                _machine: this.machine
+              });
+              return stateNode;
+            }
+          )
+        : EMPTY_OBJECT
+    ) as StateNodesConfig<TContext, TEvent>;
 
     if (this.type === 'compound' && !this.config.initial) {
       throw new Error(
-        `No initial state specified for compound state node "#${
-          this.id
-        }". Try adding { initial: "${
-          Object.keys(this.states)[0]
-        }" } to the state config.`
+        isDevelopment
+          ? `No initial state specified for compound state node "#${
+              this.id
+            }". Try adding { initial: "${firstStateKey}" } to the state config.`
+          : `No initial state specified for compound state node "#${this.id}".`
       );
     }
 
@@ -207,296 +199,404 @@ export class StateNode<
     this.history =
       this.config.history === true ? 'shallow' : this.config.history || false;
 
-    this.entry = toArray(this.config.entry).map((action) =>
-      toActionObject(action)
-    );
+    this.entry = this.config.entry as AnyAction | undefined;
+    this.exit = this.config.exit as AnyAction | undefined;
 
-    this.exit = toArray(this.config.exit).map((action) =>
-      toActionObject(action)
-    );
-    this.meta = this.config.meta;
-    this.doneData =
-      this.type === 'final'
-        ? (this.config as FinalStateNodeConfig<TContext, TEvent>).data
-        : undefined;
-    this.tags = toArray(config.tags);
-  }
-
-  /**
-   * The well-structured state node definition.
-   */
-  public get definition(): StateNodeDefinition<TContext, TEvent> {
-    return {
-      id: this.id,
-      key: this.key,
-      version: this.machine.version,
-      context: this.machine.context,
-      type: this.type,
-      initial: this.initial
-        ? {
-            target: this.initial.target,
-            source: this,
-            actions: this.initial.actions,
-            eventType: null as any,
-            toJSON: () => ({
-              target: this.initial!.target!.map((t) => `#${t.id}`),
-              source: `#${this.id}`,
-              actions: this.initial!.actions,
-              eventType: null as any
-            })
-          }
-        : undefined,
-      history: this.history,
-      states: mapValues(this.states, (state: StateNode<TContext, TEvent>) => {
-        return state.definition;
-      }) as StatesDefinition<TContext, TEvent>,
-      on: this.on,
-      transitions: this.transitions,
-      entry: this.entry,
-      exit: this.exit,
-      meta: this.meta,
-      order: this.order || -1,
-      data: this.doneData,
-      invoke: this.invoke,
-      description: this.description,
-      tags: this.tags
-    };
-  }
-
-  public toJSON() {
-    return this.definition;
-  }
-
-  /**
-   * The behaviors invoked as actors by this state node.
-   */
-  public get invoke(): Array<InvokeDefinition<TContext, TEvent>> {
-    return (
-      this.__cache.invoke ||
-      (this.__cache.invoke = toArray(this.config.invoke).map((invocable, i) => {
-        const id = `${this.id}:invocation[${i}]`;
-
-        const invokeConfig = toInvokeConfig(invocable, id);
-        const resolvedId = invokeConfig.id || id;
-
-        const resolvedSrc = toInvokeSource(
-          isString(invokeConfig.src)
-            ? invokeConfig.src
-            : typeof invokeConfig.src === 'object' && invokeConfig.src !== null
-            ? invokeConfig.src
-            : resolvedId
-        );
-
-        if (
-          !this.machine.options.actors[resolvedSrc.type] &&
-          isFunction(invokeConfig.src)
-        ) {
-          this.machine.options.actors = {
-            ...this.machine.options.actors,
-            [resolvedSrc.type]: invokeConfig.src
-          };
-        }
-
-        return {
-          type: actionTypes.invoke,
-          ...invokeConfig,
-          src: resolvedSrc,
-          id: resolvedId,
-          toJSON() {
-            const { onDone, onError, ...invokeDefValues } = invokeConfig;
-            return {
-              ...invokeDefValues,
-              type: actionTypes.invoke,
-              src: resolvedSrc,
-              id: resolvedId
-            };
-          }
-        } as InvokeDefinition<TContext, TEvent>;
-      }))
-    );
-  }
-
-  /**
-   * The mapping of events to transitions.
-   */
-  public get on(): TransitionDefinitionMap<TContext, TEvent> {
-    if (this.__cache.on) {
-      return this.__cache.on;
+    if (this.entry) {
+      // @ts-expect-error _special is an internal marker not on the Action type
+      this.entry._special = true;
     }
 
-    const transitions = this.transitions;
+    if (this.exit) {
+      // @ts-expect-error _special is an internal marker not on the Action type
+      this.exit._special = true;
+    }
 
-    return (this.__cache.on = transitions.reduce((map, transition) => {
-      map[transition.eventType] = map[transition.eventType] || [];
-      map[transition.eventType].push(transition as any);
-      return map;
-    }, {} as TransitionDefinitionMap<TContext, TEvent>));
+    this.meta = this.config.meta;
+    this.output =
+      this.type === 'final' || !this.parent ? this.config.output : undefined;
+    this.tags = toArray(config.tags).slice();
+    this.invoke = toArray(this.config.invoke).map((invokeConfig, i) => {
+      const { src, registryKey } = invokeConfig;
+      const invokeId = createInvokeId(this.id, i);
+      const resolvedId = invokeConfig.id ?? invokeId;
+      // Referenced (string) actors keep their logical name so persisted
+      // snapshots reference `src: 'fetchUser'` rather than a positional id;
+      // only inline logic gets the synthetic source name.
+      const sourceName =
+        typeof src === 'string' ? src : `xstate.invoke.${invokeId}`;
+
+      return {
+        ...invokeConfig,
+        src: sourceName,
+        logic: src,
+        id: resolvedId,
+        registryKey
+      } as AnyInvokeDefinition;
+    });
   }
 
-  public get after(): Array<DelayedTransitionDefinition<TContext, TEvent>> {
-    return (
-      this.__cache.delayedTransitions ||
-      ((this.__cache.delayedTransitions = getDelayedTransitions(this)),
-      this.__cache.delayedTransitions)
+  /** @internal */
+  public _initialize() {
+    this.after = getDelayedTransitions(this) as any;
+    this.transitions = formatTransitions(this);
+    if (this.type === 'choice') {
+      this.always = formatChoiceTransitions(this);
+    } else if (this.config.always) {
+      this.always = mapTransitionConfigs(this.config.always, (transition) =>
+        formatTransition(this, NULL_EVENT, transition)
+      );
+    }
+
+    for (const key of Object.keys(this.states)) {
+      this.states[key]._initialize();
+    }
+
+    this._refreshEventMetadata();
+  }
+
+  /** @internal */
+  public _refreshEventMetadata() {
+    const on = {} as TransitionDefinitionMap<TContext, TEvent>;
+    const ownEvents: EventDescriptor<any>[] = [];
+    for (const [descriptor, transitions] of this.transitions) {
+      (on as any)[descriptor] = transitions.slice();
+      if (
+        transitions.some(
+          (transition) =>
+            transition.target || transition.reenter || transition.to
+        )
+      ) {
+        ownEvents.push(descriptor);
+      }
+    }
+    this.on = on;
+    this.ownEvents = ownEvents;
+
+    const events = new Set<EventDescriptor<any>>(ownEvents);
+    for (const state of Object.values(this.states)) {
+      for (const event of state.events) {
+        events.add(event);
+      }
+    }
+    this.events = Array.from(events);
+  }
+
+  public get initial(): InitialTransitionDefinition {
+    return memo(this, 'initial', () =>
+      formatInitialTransition(this, this.config.initial)
     );
   }
 
-  /**
-   * All the transitions that can be taken from this state node.
-   */
-  public get transitions(): Array<TransitionDefinition<TContext, TEvent>> {
-    return (
-      this.__cache.transitions ||
-      ((this.__cache.transitions = formatTransitions(this)),
-      this.__cache.transitions)
-    );
-  }
-
-  public get initial(): InitialTransitionDefinition<TContext, TEvent> {
-    return (
-      this.__initial ||
-      ((this.__initial = formatInitialTransition(
-        this,
-        this.config.initial || []
-      )),
-      this.__initial)
-    );
-  }
-
-  /**
-   * Returns `true` if this state node explicitly handles the given event.
-   *
-   * @param event The event in question
-   */
-  public handles(event: Event<TEvent>): boolean {
-    const eventType = getEventType<TEvent>(event);
-
-    return this.events.includes(eventType);
-  }
-
+  /** @internal */
   public next(
-    state: State<TContext, TEvent>,
-    _event: SCXML.Event<TEvent>
-  ): Transitions<TContext, TEvent> | undefined {
-    const eventName = _event.name;
-    const actions: Array<ActionObject<TContext, TEvent>> = [];
-
-    let selectedTransition: TransitionDefinition<TContext, TEvent> | undefined;
-
-    const candidates: Array<TransitionDefinition<TContext, TEvent>> =
-      this.__cache.candidates[eventName] ||
-      (this.__cache.candidates[eventName] = getCandidates(
-        this,
-        eventName,
-        this.machine.config.scxml // Whether token matching should be used
-      ));
+    snapshot: AnyMachineSnapshot,
+    event: AnyEventObject,
+    self: AnyActor
+  ): Array<AnyTransitionDefinition> | undefined {
+    const eventType = event.type;
+    const candidates: Array<AnyTransitionDefinition> = memo(
+      this,
+      `candidates-${eventType}`,
+      () => getCandidates(this, eventType)
+    );
 
     for (const candidate of candidates) {
-      const { guard } = candidate;
-      const resolvedContext = state.context;
-
-      let guardPassed = false;
-
-      try {
-        guardPassed =
-          !guard ||
-          evaluateGuard<TContext, TEvent>(
-            guard,
-            resolvedContext,
-            _event,
-            state,
-            this.machine
-          );
-      } catch (err) {
-        throw new Error(
-          `Unable to evaluate guard '${
-            guard!.type
-          }' in transition for event '${eventName}' in state node '${
-            this.id
-          }':\n${err.message}`
-        );
-      }
+      const guardPassed = evaluateCandidate(
+        candidate,
+        event,
+        snapshot,
+        this,
+        self
+      );
 
       if (guardPassed) {
-        actions.push(...candidate.actions);
-        selectedTransition = candidate;
-        break;
+        return [candidate];
       }
-    }
-
-    return selectedTransition ? [selectedTransition] : undefined;
-  }
-
-  /**
-   * The target state value of the history state node, if it exists. This represents the
-   * default state value to transition to if no history value exists yet.
-   */
-  public get target(): string | undefined {
-    if (this.type === 'history') {
-      const historyConfig = this.config as HistoryStateNodeConfig<
-        TContext,
-        TEvent
-      >;
-      return historyConfig.target;
     }
 
     return undefined;
   }
+}
 
-  /**
-   * All the state node IDs of this state node and its descendant state nodes.
-   */
-  public get stateIds(): string[] {
-    const childStateIds = flatten(
-      keys(this.states).map((stateKey) => {
-        return this.states[stateKey].stateIds;
-      })
-    );
-    return [this.id].concat(childStateIds);
+function validateStateNodeConfig(stateNode: AnyStateNode) {
+  const config = stateNode.config as any;
+
+  if (stateNode.type !== 'choice') {
+    if (isDevelopment && config.choice !== undefined) {
+      throw new Error(
+        `State "${stateNode.id}" has \`choice\`, but \`choice\` can only be used with \`type: 'choice'\`.`
+      );
+    }
+    return;
   }
 
-  /**
-   * All the event types accepted by this state node and its descendants.
-   */
-  public get events(): Array<TEvent['type']> {
-    if (this.__cache.events) {
-      return this.__cache.events;
-    }
-    const { states } = this;
-    const events = new Set(this.ownEvents);
+  if (typeof config.choice !== 'function') {
+    throw new Error(
+      isDevelopment
+        ? `Choice state "${stateNode.id}" must declare a \`choice\` function.`
+        : `Missing \`choice\` function on "${stateNode.id}"`
+    );
+  }
 
-    if (states) {
-      for (const stateId of keys(states)) {
-        const state = states[stateId];
-        if (state.states) {
-          for (const event of state.events) {
-            events.add(`${event}`);
-          }
+  if (isDevelopment) {
+    for (const key of CHOICE_CONFIG_KEYS) {
+      if (config[key] !== undefined) {
+        throw new Error(
+          `Choice state "${stateNode.id}" cannot declare \`${key}\`.`
+        );
+      }
+    }
+  }
+}
+
+function formatChoiceTransitions(
+  stateNode: AnyStateNode
+): AnyTransitionDefinition[] {
+  const choice = (stateNode.config as any).choice;
+  const validateChoiceResult = (result: any): AnyTransitionConfig => {
+    if (!result || result.target === undefined) {
+      throw new Error(
+        isDevelopment
+          ? `Choice state "${stateNode.id}" must resolve to a target.`
+          : `Choice "${stateNode.id}" has no target`
+      );
+    }
+    if (isDevelopment) {
+      for (const key of ['actions', 'to'] as const) {
+        if (result[key] !== undefined) {
+          throw new Error(
+            `Choice state "${stateNode.id}" cannot declare \`${key}\` on a choice.`
+          );
         }
       }
     }
+    return result;
+  };
 
-    return (this.__cache.events = Array.from(events));
+  return [
+    formatTransition(stateNode, NULL_EVENT, {
+      to: (args: any) => validateChoiceResult(choice(args))
+    } as AnyTransitionConfig)
+  ];
+}
+
+function mapTransitionConfigs<T>(
+  transitionsConfig: unknown,
+  mapper: (transition: AnyTransitionConfig) => T
+): T[] {
+  const transitionConfigs = toTransitionConfigArray(transitionsConfig as any);
+  const transitions = new Array<T>(transitionConfigs.length);
+
+  for (let i = 0; i < transitionConfigs.length; i++) {
+    transitions[i] = mapper(transitionConfigs[i]);
   }
 
-  /**
-   * All the events that have transitions directly from this state node.
-   *
-   * Excludes any inert events.
-   */
-  public get ownEvents(): Array<TEvent['type']> {
-    const events = new Set(
-      this.transitions
-        .filter((transition) => {
-          return !(
-            !transition.target &&
-            !transition.actions.length &&
-            transition.internal
-          );
-        })
-        .map((transition) => transition.eventType)
+  return transitions;
+}
+
+function formatTransitions<
+  TContext extends MachineContext,
+  TEvent extends EventObject
+>(
+  stateNode: AnyStateNode
+): Map<string, TransitionDefinition<TContext, TEvent>[]> {
+  const transitions = new Map<
+    string,
+    TransitionDefinition<TContext, AnyEventObject>[]
+  >();
+  if (stateNode.config.on) {
+    for (const descriptor of Object.keys(stateNode.config.on)) {
+      if (descriptor === NULL_EVENT) {
+        throw new Error(
+          isDevelopment
+            ? 'Null events ("") cannot be specified as a transition key. Use `always: { ... }` instead.'
+            : 'Null event transition key'
+        );
+      }
+      const transitionsConfig = stateNode.config.on[descriptor];
+      transitions.set(
+        descriptor,
+        mapTransitionConfigs(transitionsConfig, (transition) =>
+          formatTransition(stateNode, descriptor, transition)
+        )
+      );
+    }
+  }
+  if (stateNode.config.onDone) {
+    const descriptor = `xstate.done.state.${stateNode.id}`;
+    transitions.set(
+      descriptor,
+      mapTransitionConfigs(stateNode.config.onDone, (transition) =>
+        formatTransition(stateNode, descriptor, transition)
+      )
     );
-
-    return Array.from(events);
   }
+  if (stateNode.config.onError) {
+    const descriptor = 'xstate.error.*';
+    transitions.set(
+      descriptor,
+      mapTransitionConfigs(stateNode.config.onError, (transition) =>
+        formatTransition(stateNode, descriptor, transition)
+      )
+    );
+  }
+  const createCancelInvokeTimeoutTransition = (
+    descriptor: string,
+    timeoutEventType: string
+  ): AnyTransitionDefinition =>
+    formatTransition(stateNode, descriptor, {
+      to: (_args: any, enq: any) => {
+        enq.cancel(timeoutEventType);
+        return {};
+      }
+    } as AnyTransitionConfig);
+  const formatInvokeCompletionTransition = (
+    descriptor: string,
+    transitionConfig: AnyTransitionConfig,
+    timeoutEventType: string
+  ): AnyTransitionDefinition => {
+    const { target, to, reenter, ...rest } = transitionConfig;
+
+    return formatTransition(stateNode, descriptor, {
+      ...rest,
+      reenter,
+      to: (args: any, enq: any) => {
+        if (to) {
+          let didEnqueue = false;
+          const trackingEnqueue = new Proxy(enq, {
+            apply(target, thisArg, argArray) {
+              didEnqueue = true;
+              return Reflect.apply(target, thisArg, argArray);
+            },
+            get(target, prop, receiver) {
+              const value = Reflect.get(target, prop, receiver);
+
+              if (typeof value !== 'function') {
+                return value;
+              }
+
+              return (...argArray: any[]) => {
+                didEnqueue = true;
+                return value.apply(target, argArray);
+              };
+            }
+          });
+          const result = to(args, trackingEnqueue);
+
+          if (result !== undefined || didEnqueue) {
+            enq.cancel(timeoutEventType);
+          }
+
+          return result;
+        }
+
+        enq.cancel(timeoutEventType);
+        return {
+          target,
+          reenter
+        };
+      }
+    } as AnyTransitionConfig);
+  };
+  for (const invokeDef of stateNode.invoke) {
+    const invokeTimeoutEventType =
+      invokeDef.timeout !== undefined
+        ? createInvokeTimeoutEvent(invokeDef.id).type
+        : undefined;
+
+    if (invokeDef.onDone) {
+      const descriptor = `xstate.done.actor.${invokeDef.id}`;
+      const invokeDoneTransitions = mapTransitionConfigs(
+        invokeDef.onDone,
+        (transition) =>
+          invokeTimeoutEventType
+            ? formatInvokeCompletionTransition(
+                descriptor,
+                transition,
+                invokeTimeoutEventType
+              )
+            : formatTransition(stateNode, descriptor, transition)
+      );
+
+      if (invokeTimeoutEventType) {
+        invokeDoneTransitions.push(
+          createCancelInvokeTimeoutTransition(
+            descriptor,
+            invokeTimeoutEventType
+          )
+        );
+      }
+
+      transitions.set(descriptor, invokeDoneTransitions);
+    } else if (invokeTimeoutEventType) {
+      const descriptor = `xstate.done.actor.${invokeDef.id}`;
+      transitions.set(descriptor, [
+        createCancelInvokeTimeoutTransition(descriptor, invokeTimeoutEventType)
+      ]);
+    }
+    if (invokeDef.onError) {
+      const descriptor = `xstate.error.actor.${invokeDef.id}`;
+      transitions.set(
+        descriptor,
+        mapTransitionConfigs(invokeDef.onError, (transition) =>
+          invokeTimeoutEventType
+            ? formatInvokeCompletionTransition(
+                descriptor,
+                transition,
+                invokeTimeoutEventType
+              )
+            : formatTransition(stateNode, descriptor, transition)
+        )
+      );
+    }
+    if (invokeDef.onSnapshot) {
+      const descriptor = `xstate.snapshot.${invokeDef.id}`;
+      transitions.set(
+        descriptor,
+        mapTransitionConfigs(invokeDef.onSnapshot, (transition) =>
+          formatTransition(stateNode, descriptor, transition)
+        )
+      );
+    }
+  }
+  for (const delayedTransition of stateNode.after) {
+    let existing = transitions.get(delayedTransition.eventType);
+    if (!existing) {
+      existing = [];
+      transitions.set(delayedTransition.eventType, existing);
+    }
+    existing.push(
+      delayedTransition as TransitionDefinition<TContext, AnyEventObject>
+    );
+  }
+  return transitions as Map<string, TransitionDefinition<TContext, any>[]>;
+}
+
+function formatInitialTransition(
+  stateNode: AnyStateNode,
+  _target: string | { target: string; input?: any } | undefined
+): InitialTransitionDefinition {
+  const targetString =
+    typeof _target === 'object' && _target !== null ? _target.target : _target;
+  const input =
+    typeof _target === 'object' && _target !== null ? _target.input : undefined;
+  const resolvedTarget =
+    typeof targetString === 'string'
+      ? stateNode.states[targetString]
+      : undefined;
+  if (!resolvedTarget && targetString) {
+    throw new Error(
+      isDevelopment
+        ? `Initial state node "${targetString}" not found on parent state node #${stateNode.id}`
+        : `Initial state "${targetString}" not found on "#${stateNode.id}"`
+    );
+  }
+  const transition: InitialTransitionDefinition = {
+    source: stateNode,
+    target: resolvedTarget ? [resolvedTarget] : undefined,
+    input
+  };
+
+  return transition;
 }

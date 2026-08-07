@@ -1,21 +1,27 @@
-import { createMachine, interpret, State } from '../src/index';
-import { assign, raise } from '../src/actions';
-import { invokeMachine } from '../src/invoke';
-import { stateIn } from '../src/guards';
+import { z } from 'zod';
+import { createMachine, createActor, matchesState } from '../src/index';
 
 const greetingContext = { hour: 10 };
-const greetingMachine = createMachine<typeof greetingContext>({
-  key: 'greeting',
+const greetingMachine = createMachine({
+  // types: {} as { context: typeof greetingContext },
+  schemas: {
+    context: z.object({
+      hour: z.number()
+    })
+  },
+  id: 'greeting',
   initial: 'pending',
   context: greetingContext,
   states: {
     pending: {
-      on: {
-        '': [
-          { target: 'morning', guard: (ctx) => ctx.hour < 12 },
-          { target: 'afternoon', guard: (ctx) => ctx.hour < 18 },
-          { target: 'evening' }
-        ]
+      always: ({ context }) => {
+        if (context.hour < 12) {
+          return { target: 'morning' };
+        } else if (context.hour < 18) {
+          return { target: 'afternoon' };
+        } else {
+          return { target: 'evening' };
+        }
       }
     },
     morning: {},
@@ -23,107 +29,151 @@ const greetingMachine = createMachine<typeof greetingContext>({
     evening: {}
   },
   on: {
-    CHANGE: { actions: assign({ hour: 20 }) },
-    RECHECK: '#greeting'
+    CHANGE: () => ({
+      context: {
+        hour: 20
+      }
+    }),
+    RECHECK: { target: '#greeting' }
   }
 });
 
 describe('transient states (eventless transitions)', () => {
-  const updateMachine = createMachine<{ data: boolean; status?: string }>({
-    initial: 'G',
-    states: {
-      G: {
-        on: { UPDATE_BUTTON_CLICKED: 'E' }
+  it('should choose the first candidate target that matches the guard 1', () => {
+    const machine = createMachine({
+      // types: {} as { context: { data: boolean } },
+      schemas: {
+        context: z.object({
+          data: z.boolean()
+        })
       },
-      E: {
-        always: [
-          { target: 'D', guard: ({ data }) => !data }, // no data returned
-          { target: 'B', guard: ({ status }) => status === 'Y' },
-          { target: 'C', guard: ({ status }) => status === 'X' },
-          { target: 'F' } // default, or just the string 'F'
-        ]
+      context: { data: false },
+      initial: 'G',
+      states: {
+        G: {
+          on: { UPDATE_BUTTON_CLICKED: { target: 'E' } }
+        },
+        E: {
+          always: ({ context }) => {
+            if (!context.data) {
+              return { target: 'D' };
+            } else {
+              return { target: 'F' };
+            }
+          }
+        },
+        D: {},
+        F: {}
+      }
+    });
+
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'UPDATE_BUTTON_CLICKED' });
+
+    expect(actorRef.getSnapshot().value).toEqual('D');
+  });
+
+  it('should choose the first candidate target that matches the guard 2', () => {
+    const machine = createMachine({
+      // types: {} as { context: { data: boolean; status?: string } },
+      schemas: {
+        context: z.object({
+          data: z.boolean(),
+          status: z.string().optional()
+        })
       },
-      D: {},
-      B: {},
-      C: {},
-      F: {}
-    }
-  });
+      context: { data: false },
+      initial: 'G',
+      states: {
+        G: {
+          on: { UPDATE_BUTTON_CLICKED: { target: 'E' } }
+        },
+        E: {
+          always: ({ context }) => {
+            if (!context.data) {
+              return { target: 'D' };
+            } else {
+              return { target: 'F' };
+            }
+          }
+        },
+        D: {},
+        F: {}
+      }
+    });
 
-  it('should choose the first candidate target that matches the guard (D)', () => {
-    const nextState = updateMachine.transition(
-      State.from<any>('G', {
-        data: false
-      }),
-      'UPDATE_BUTTON_CLICKED'
-    );
-    expect(nextState.value).toEqual('D');
-  });
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'UPDATE_BUTTON_CLICKED' });
 
-  it('should choose the first candidate target that matches the guard (B)', () => {
-    const nextState = updateMachine.transition(
-      State.from<any>('G', {
-        data: true,
-        status: 'Y'
-      }),
-      'UPDATE_BUTTON_CLICKED'
-    );
-    expect(nextState.value).toEqual('B');
-  });
-
-  it('should choose the first candidate target that matches the guard (C)', () => {
-    const nextState = updateMachine.transition(
-      State.from('G', {
-        data: true,
-        status: 'X'
-      }),
-      'UPDATE_BUTTON_CLICKED'
-    );
-    expect(nextState.value).toEqual('C');
+    expect(actorRef.getSnapshot().value).toEqual('D');
   });
 
   it('should choose the final candidate without a guard if none others match', () => {
-    const nextState = updateMachine.transition(
-      State.from('G', {
-        data: true,
-        status: 'other'
-      }),
-      'UPDATE_BUTTON_CLICKED'
-    );
-    expect(nextState.value).toEqual('F');
+    const machine = createMachine({
+      // types: {} as { context: { data: boolean; status?: string } },
+      schemas: {
+        context: z.object({
+          data: z.boolean(),
+          status: z.string().optional()
+        })
+      },
+      context: { data: true },
+      initial: 'G',
+      states: {
+        G: {
+          on: { UPDATE_BUTTON_CLICKED: { target: 'E' } }
+        },
+        E: {
+          always: ({ context }) => {
+            if (!context.data) {
+              return { target: 'D' };
+            } else {
+              return { target: 'F' };
+            }
+          }
+        },
+        D: {},
+        F: {}
+      }
+    });
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'UPDATE_BUTTON_CLICKED' });
+
+    expect(actorRef.getSnapshot().value).toEqual('F');
   });
 
   it('should carry actions from previous transitions within same step', () => {
+    const actual: string[] = [];
     const machine = createMachine({
       initial: 'A',
       states: {
         A: {
-          exit: 'exit_A',
+          exit: (_, enq) => {
+            enq(() => void actual.push('exit_A'));
+          },
           on: {
-            TIMER: {
-              target: 'T',
-              actions: ['timer']
+            TIMER: (_, enq) => {
+              enq(() => void actual.push('timer'));
+              return { target: 'T' };
             }
           }
         },
         T: {
-          on: {
-            '': [{ target: 'B' }]
-          }
+          always: { target: 'B' }
         },
         B: {
-          entry: 'enter_B'
+          entry: (_, enq) => {
+            enq(() => void actual.push('enter_B'));
+          }
         }
       }
     });
 
-    const state = machine.transition('A', 'TIMER');
+    const actor = createActor(machine).start();
 
-    expect(state.actions.map((a) => a.type)).toEqual([
-      'exit_A',
-      'timer',
-      'enter_B'
-    ]);
+    actor.send({ type: 'TIMER' });
+
+    expect(actual).toEqual(['exit_A', 'timer', 'enter_B']);
   });
 
   it('should execute all internal events one after the other', () => {
@@ -135,11 +185,13 @@ describe('transient states (eventless transitions)', () => {
           states: {
             A1: {
               on: {
-                E: 'A2'
+                E: { target: 'A2' }
               }
             },
             A2: {
-              entry: raise('INT1')
+              entry: (_, enq) => {
+                enq.raise({ type: 'INT1' });
+              }
             }
           }
         },
@@ -149,11 +201,13 @@ describe('transient states (eventless transitions)', () => {
           states: {
             B1: {
               on: {
-                E: 'B2'
+                E: { target: 'B2' }
               }
             },
             B2: {
-              entry: raise('INT2')
+              entry: (_, enq) => {
+                enq.raise({ type: 'INT2' });
+              }
             }
           }
         },
@@ -163,18 +217,18 @@ describe('transient states (eventless transitions)', () => {
           states: {
             C1: {
               on: {
-                INT1: 'C2',
-                INT2: 'C3'
+                INT1: { target: 'C2' },
+                INT2: { target: 'C3' }
               }
             },
             C2: {
               on: {
-                INT2: 'C4'
+                INT2: { target: 'C4' }
               }
             },
             C3: {
               on: {
-                INT1: 'C4'
+                INT1: { target: 'C4' }
               }
             },
             C4: {}
@@ -183,9 +237,10 @@ describe('transient states (eventless transitions)', () => {
       }
     });
 
-    const state = machine.transition(machine.initialState, 'E');
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'E' });
 
-    expect(state.value).toEqual({ A: 'A2', B: 'B2', C: 'C4' });
+    expect(actorRef.getSnapshot().value).toEqual({ A: 'A2', B: 'B2', C: 'C4' });
   });
 
   it('should execute all eventless transitions in the same microstep', () => {
@@ -197,19 +252,16 @@ describe('transient states (eventless transitions)', () => {
           states: {
             A1: {
               on: {
-                E: 'A2' // the external event
+                E: { target: 'A2' } // the external event
               }
             },
             A2: {
-              on: {
-                '': 'A3'
-              }
+              always: { target: 'A3' }
             },
             A3: {
-              on: {
-                '': {
-                  target: 'A4',
-                  guard: stateIn({ B: 'B3' })
+              always: ({ value }) => {
+                if (matchesState({ B: 'B3' }, value)) {
+                  return { target: 'A4' };
                 }
               }
             },
@@ -222,22 +274,20 @@ describe('transient states (eventless transitions)', () => {
           states: {
             B1: {
               on: {
-                E: 'B2'
+                E: { target: 'B2' }
               }
             },
             B2: {
-              on: {
-                '': {
-                  target: 'B3',
-                  guard: stateIn({ A: 'A2' })
+              always: ({ value }) => {
+                if (matchesState({ A: 'A2' }, value)) {
+                  return { target: 'B3' };
                 }
               }
             },
             B3: {
-              on: {
-                '': {
-                  target: 'B4',
-                  guard: stateIn({ A: 'A3' })
+              always: ({ value }) => {
+                if (matchesState({ A: 'A3' }, value)) {
+                  return { target: 'B4' };
                 }
               }
             },
@@ -247,65 +297,10 @@ describe('transient states (eventless transitions)', () => {
       }
     });
 
-    const state = machine.transition(machine.initialState, 'E');
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'E' });
 
-    expect(state.value).toEqual({ A: 'A4', B: 'B4' });
-  });
-
-  it('should execute all eventless transitions in the same microstep (with `always`)', () => {
-    const machine = createMachine({
-      type: 'parallel',
-      states: {
-        A: {
-          initial: 'A1',
-          states: {
-            A1: {
-              on: {
-                E: 'A2' // the external event
-              }
-            },
-            A2: {
-              always: 'A3'
-            },
-            A3: {
-              always: {
-                target: 'A4',
-                guard: stateIn({ B: 'B3' })
-              }
-            },
-            A4: {}
-          }
-        },
-
-        B: {
-          initial: 'B1',
-          states: {
-            B1: {
-              on: {
-                E: 'B2'
-              }
-            },
-            B2: {
-              always: {
-                target: 'B3',
-                guard: stateIn({ A: 'A2' })
-              }
-            },
-            B3: {
-              always: {
-                target: 'B4',
-                guard: stateIn({ A: 'A3' })
-              }
-            },
-            B4: {}
-          }
-        }
-      }
-    });
-
-    const state = machine.transition(machine.initialState, 'E');
-
-    expect(state.value).toEqual({ A: 'A4', B: 'B4' });
+    expect(actorRef.getSnapshot().value).toEqual({ A: 'A4', B: 'B4' });
   });
 
   it('should check for automatic transitions even after microsteps are done', () => {
@@ -317,7 +312,7 @@ describe('transient states (eventless transitions)', () => {
           states: {
             A1: {
               on: {
-                A: 'A2'
+                A: { target: 'A2' }
               }
             },
             A2: {}
@@ -327,10 +322,9 @@ describe('transient states (eventless transitions)', () => {
           initial: 'B1',
           states: {
             B1: {
-              on: {
-                '': {
-                  target: 'B2',
-                  guard: stateIn({ A: 'A2' })
+              always: ({ value }) => {
+                if (matchesState({ A: 'A2' }, value)) {
+                  return { target: 'B2' };
                 }
               }
             },
@@ -341,10 +335,9 @@ describe('transient states (eventless transitions)', () => {
           initial: 'C1',
           states: {
             C1: {
-              on: {
-                '': {
-                  target: 'C2',
-                  guard: stateIn({ A: 'A2' })
+              always: ({ value }) => {
+                if (matchesState({ A: 'A2' }, value)) {
+                  return { target: 'C2' };
                 }
               }
             },
@@ -354,75 +347,24 @@ describe('transient states (eventless transitions)', () => {
       }
     });
 
-    let state = machine.initialState; // A1, B1, C1
-    state = machine.transition(state, 'A'); // A2, B2, C2
-    expect(state.value).toEqual({ A: 'A2', B: 'B2', C: 'C2' });
-  });
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'A' });
 
-  it('should check for automatic transitions even after microsteps are done (with `always`)', () => {
-    const machine = createMachine({
-      type: 'parallel',
-      states: {
-        A: {
-          initial: 'A1',
-          states: {
-            A1: {
-              on: {
-                A: 'A2'
-              }
-            },
-            A2: { id: 'A2' }
-          }
-        },
-        B: {
-          initial: 'B1',
-          states: {
-            B1: {
-              always: {
-                target: 'B2',
-                guard: stateIn({ A: 'A2' })
-              }
-            },
-            B2: {}
-          }
-        },
-        C: {
-          initial: 'C1',
-          states: {
-            C1: {
-              always: {
-                target: 'C2',
-                guard: stateIn('#A2')
-              }
-            },
-            C2: {}
-          }
-        }
-      }
-    });
-
-    let state = machine.initialState; // A1, B1, C1
-    state = machine.transition(state, 'A'); // A2, B2, C2
-    expect(state.value).toEqual({ A: 'A2', B: 'B2', C: 'C2' });
+    expect(actorRef.getSnapshot().value).toEqual({ A: 'A2', B: 'B2', C: 'C2' });
   });
 
   it('should determine the resolved initial state from the transient state', () => {
-    expect(greetingMachine.initialState.value).toEqual('morning');
+    expect(createActor(greetingMachine).getSnapshot().value).toEqual('morning');
   });
 
   it('should determine the resolved state from an initial transient state', () => {
-    const morningState = greetingMachine.initialState;
-    expect(morningState.value).toEqual('morning');
-    const stillMorningState = greetingMachine.transition(
-      morningState,
-      'CHANGE'
-    );
-    expect(stillMorningState.value).toEqual('morning');
-    const eveningState = greetingMachine.transition(
-      stillMorningState,
-      'RECHECK'
-    );
-    expect(eveningState.value).toEqual('evening');
+    const actorRef = createActor(greetingMachine).start();
+
+    actorRef.send({ type: 'CHANGE' });
+    expect(actorRef.getSnapshot().value).toEqual('morning');
+
+    actorRef.send({ type: 'RECHECK' });
+    expect(actorRef.getSnapshot().value).toEqual('evening');
   });
 
   it('should select eventless transition before processing raised events', () => {
@@ -431,19 +373,21 @@ describe('transient states (eventless transitions)', () => {
       states: {
         a: {
           on: {
-            FOO: 'b'
+            FOO: { target: 'b' }
           }
         },
         b: {
-          entry: raise('BAR'),
+          entry: (_, enq) => {
+            enq.raise({ type: 'BAR' });
+          },
+          always: { target: 'c' },
           on: {
-            '': 'c',
-            BAR: 'd'
+            BAR: { target: 'd' }
           }
         },
         c: {
           on: {
-            BAR: 'e'
+            BAR: { target: 'e' }
           }
         },
         d: {},
@@ -451,56 +395,10 @@ describe('transient states (eventless transitions)', () => {
       }
     });
 
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('e');
-  });
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'FOO' });
 
-  it('should select eventless transition before processing raised events (with `always`)', () => {
-    const machine = createMachine({
-      initial: 'a',
-      states: {
-        a: {
-          on: {
-            FOO: 'b'
-          }
-        },
-        b: {
-          entry: raise('BAR'),
-          always: 'c',
-          on: {
-            BAR: 'd'
-          }
-        },
-        c: {
-          on: {
-            BAR: 'e'
-          }
-        },
-        d: {},
-        e: {}
-      }
-    });
-
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('e');
-  });
-
-  it('should select eventless transition for array `.on` config', () => {
-    const machine = createMachine({
-      initial: 'a',
-      states: {
-        a: {
-          on: { FOO: 'b' }
-        },
-        b: {
-          on: [{ event: '', target: 'pass' }]
-        },
-        pass: {}
-      }
-    });
-
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('pass');
+    expect(actorRef.getSnapshot().value).toBe('e');
   });
 
   it('should not select wildcard for eventless transition', () => {
@@ -508,110 +406,44 @@ describe('transient states (eventless transitions)', () => {
       initial: 'a',
       states: {
         a: {
-          on: { FOO: 'b' }
+          on: { FOO: { target: 'b' } }
         },
         b: {
-          on: { '*': 'fail' }
-        },
-        fail: {}
-      }
-    });
-
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('b');
-  });
-
-  it('should not select wildcard for eventless transition (array `.on`)', () => {
-    const machine = createMachine({
-      initial: 'a',
-      states: {
-        a: {
-          on: { FOO: 'b' }
-        },
-        b: {
-          on: [
-            { event: '*', target: 'fail' },
-            { event: '', target: 'pass' }
-          ]
-        },
-        fail: {},
-        pass: {}
-      }
-    });
-
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('pass');
-  });
-
-  it('should not select wildcard for eventless transition (with `always`)', () => {
-    const machine = createMachine({
-      initial: 'a',
-      states: {
-        a: {
-          on: { FOO: 'b' }
-        },
-        b: {
-          always: 'pass',
-          on: [{ event: '*', target: 'fail' }]
-        },
-        fail: {},
-        pass: {}
-      }
-    });
-
-    const state = machine.transition('a', 'FOO');
-    expect(state.value).toBe('pass');
-  });
-
-  it('should work with transient transition on root', (done) => {
-    const machine = createMachine<any, any, any>({
-      id: 'machine',
-      initial: 'first',
-      context: { count: 0 },
-      states: {
-        first: {
+          always: { target: 'pass' },
           on: {
-            ADD: {
-              actions: assign({ count: (ctx) => ctx.count + 1 })
-            }
+            '*': { target: 'fail' }
           }
         },
-        success: {
-          type: 'final'
-        }
+        fail: {},
+        pass: {}
+      }
+    });
+
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'FOO' });
+
+    expect(actorRef.getSnapshot().value).toBe('pass');
+  });
+
+  it('should work with transient transition on root', () => {
+    const machine = createMachine({
+      // types: {} as { context: { count: number } },
+      schemas: {
+        context: z.object({
+          count: z.number()
+        })
       },
-      on: {
-        '': [
-          {
-            target: '.success',
-            guard: (ctx) => {
-              return ctx.count > 0;
-            }
-          }
-        ]
-      }
-    });
-
-    const service = interpret(machine).onDone(() => {
-      done();
-    });
-
-    service.start();
-
-    service.send('ADD');
-  });
-
-  it('should work with transient transition on root (with `always`)', (done) => {
-    const machine = createMachine<any, any, any>({
       id: 'machine',
       initial: 'first',
       context: { count: 0 },
       states: {
         first: {
           on: {
-            ADD: {
-              actions: assign({ count: (ctx) => ctx.count + 1 })
-            }
+            ADD: ({ context }) => ({
+              context: {
+                count: context.count + 1
+              }
+            })
           }
         },
         success: {
@@ -619,42 +451,42 @@ describe('transient states (eventless transitions)', () => {
         }
       },
 
-      always: [
-        {
-          target: '.success',
-          guard: (ctx) => {
-            return ctx.count > 0;
-          }
+      always: ({ context }) => {
+        if (context.count > 0) {
+          return { target: '.success' };
         }
-      ]
+      }
     });
 
-    const service = interpret(machine).onDone(() => {
-      done();
-    });
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'ADD' });
 
-    service.start();
-
-    service.send('ADD');
+    expect(actorRef.getSnapshot().status).toBe('done');
   });
 
   it("shouldn't crash when invoking a machine with initial transient transition depending on custom data", () => {
     const timerMachine = createMachine({
       initial: 'initial',
-      context: {
-        duration: 0
+      schemas: {
+        context: z.object({
+          duration: z.number()
+        }),
+        input: z.object({
+          duration: z.number()
+        })
       },
+      context: ({ input }: { input: { duration: number } }) => ({
+        duration: input.duration
+      }),
       states: {
         initial: {
-          always: [
-            {
-              target: `finished`,
-              guard: (ctx) => ctx.duration < 1000
-            },
-            {
-              target: `active`
+          always: ({ context }) => {
+            if (context.duration < 1000) {
+              return { target: 'finished' };
+            } else {
+              return { target: 'active' };
             }
-          ]
+          }
         },
         active: {},
         finished: { type: 'final' }
@@ -662,6 +494,11 @@ describe('transient states (eventless transitions)', () => {
     });
 
     const machine = createMachine({
+      schemas: {
+        context: z.object({
+          customDuration: z.number()
+        })
+      },
       initial: 'active',
       context: {
         customDuration: 3000
@@ -669,73 +506,372 @@ describe('transient states (eventless transitions)', () => {
       states: {
         active: {
           invoke: {
-            src: invokeMachine(timerMachine),
-            data: {
-              duration: (context) => context.customDuration
-            }
+            src: timerMachine,
+            input: ({ context }) => ({
+              duration: context.customDuration
+            })
           }
         }
       }
     });
 
-    const service = interpret(machine);
-    expect(() => service.start()).not.toThrow();
+    const actorRef = createActor(machine);
+    expect(() => actorRef.start()).not.toThrow();
   });
 
   it('should be taken even in absence of other transitions', () => {
-    let shouldMatch = false;
-
     const machine = createMachine({
       initial: 'a',
       states: {
         a: {
-          always: {
-            target: 'b',
-            // TODO: in v5 remove `shouldMatch` and replace this guard with:
-            // guard: (ctx, ev) => ev.type === 'WHATEVER'
-            guard: () => shouldMatch
+          always: ({ event }) => {
+            if (event.type === 'WHATEVER') {
+              return { target: 'b' };
+            }
           }
         },
         b: {}
       }
     });
-    const service = interpret(machine).start();
+    const actorRef = createActor(machine).start();
 
-    shouldMatch = true;
-    service.send({ type: 'WHATEVER' });
+    actorRef.send({ type: 'WHATEVER' });
 
-    expect(service.state.value).toBe('b');
+    expect(actorRef.getSnapshot().value).toBe('b');
   });
 
   it('should select subsequent transient transitions even in absence of other transitions', () => {
-    let shouldMatch = false;
-
     const machine = createMachine({
       initial: 'a',
       states: {
         a: {
-          always: {
-            target: 'b',
-            // TODO: in v5 remove `shouldMatch` and replace this guard with:
-            // guard: (ctx, ev) => ev.type === 'WHATEVER'
-            guard: () => shouldMatch
+          always: ({ event }) => {
+            if (event.type === 'WHATEVER') {
+              return { target: 'b' };
+            }
           }
         },
         b: {
-          always: {
-            target: 'c',
-            guard: () => true
+          always: () => {
+            if (true) {
+              return { target: 'c' };
+            }
           }
         },
         c: {}
       }
     });
 
-    const service = interpret(machine).start();
+    const actorRef = createActor(machine).start();
 
-    shouldMatch = true;
-    service.send({ type: 'WHATEVER' });
+    actorRef.send({ type: 'WHATEVER' });
 
-    expect(service.state.value).toBe('c');
+    expect(actorRef.getSnapshot().value).toBe('c');
+  });
+
+  it('events that trigger eventless transitions should be preserved in guards', () => {
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            EVENT: { target: 'b' }
+          }
+        },
+        b: {
+          always: { target: 'c' }
+        },
+        c: {
+          always: ({ event }) => {
+            expect(event.type).toEqual('EVENT');
+            if (event.type === 'EVENT') {
+              return { target: 'd' };
+            }
+          }
+        },
+        d: { type: 'final' }
+      }
+    });
+
+    const actorRef = createActor(machine).start();
+    actorRef.send({ type: 'EVENT' });
+
+    expect(actorRef.getSnapshot().status).toBe('done');
+  });
+
+  it('events that trigger eventless transitions should be preserved in actions', () => {
+    expect.assertions(2);
+
+    const machine = createMachine({
+      schemas: {
+        events: {
+          EVENT: z.object({ value: z.number() })
+        }
+      },
+      initial: 'a',
+      states: {
+        a: {
+          on: {
+            EVENT: { target: 'b' }
+          }
+        },
+        b: {
+          always: ({ event }, enq) => {
+            enq(() => void expect(event).toEqual({ type: 'EVENT', value: 42 }));
+            return { target: 'c' };
+          }
+        },
+        c: {
+          entry: ({ event }, enq) => {
+            enq(() => void expect(event).toEqual({ type: 'EVENT', value: 42 }));
+          }
+        }
+      }
+    });
+
+    const service = createActor(machine).start();
+    service.send({ type: 'EVENT', value: 42 });
+  });
+
+  it('should avoid infinite loops with eventless transitions', () => {
+    expect.assertions(1);
+    const machine = createMachine({
+      initial: 'a',
+      options: {
+        maxIterations: 100
+      },
+      states: {
+        a: {
+          always: {
+            target: 'b'
+          }
+        },
+        b: {
+          always: {
+            target: 'c'
+          }
+        },
+        c: {
+          always: {
+            target: 'a'
+          }
+        }
+      }
+    });
+    const actor = createActor(machine);
+
+    actor.subscribe({
+      error: (err) => {
+        expect((err as any).message).toMatch(/infinite loop/i);
+      }
+    });
+
+    actor.start();
+  });
+
+  it('should avoid infinite loops with raised events', () => {
+    expect.assertions(1);
+    const machine = createMachine({
+      initial: 'a',
+      states: {
+        a: {
+          always: {
+            target: 'b'
+          }
+        },
+        b: {
+          entry: (_, enq) => {
+            enq.raise({ type: 'EVENT' });
+          },
+          on: {
+            EVENT: {
+              target: 'c'
+            }
+          }
+        },
+        c: {
+          always: {
+            target: 'a'
+          }
+        }
+      },
+      options: {
+        maxIterations: 100
+      }
+    });
+    const actor = createActor(machine);
+
+    actor.subscribe({
+      error: (err) => {
+        expect((err as any).message).toMatch(/infinite loop/i);
+      }
+    });
+
+    actor.start();
+  });
+
+  it("shouldn't end up in an infinite loop when selecting the fallback target", () => {
+    const machine = createMachine({
+      initial: 'idle',
+      states: {
+        idle: {
+          on: {
+            event: { target: 'active' }
+          }
+        },
+        active: {
+          initial: 'a',
+          states: {
+            a: {},
+            b: {}
+          },
+          always: () => {
+            if (1 + 1 === 3) {
+              return { target: '.a' };
+            } else {
+              return { target: '.b' };
+            }
+          }
+        }
+      }
+    });
+    const actorRef = createActor(machine).start();
+    actorRef.send({
+      type: 'event'
+    });
+
+    expect(actorRef.getSnapshot().value).toEqual({ active: 'b' });
+  });
+
+  it("shouldn't end up in an infinite loop when selecting a guarded target", () => {
+    const machine = createMachine({
+      initial: 'idle',
+      states: {
+        idle: {
+          on: {
+            event: { target: 'active' }
+          }
+        },
+        active: {
+          initial: 'a',
+          states: {
+            a: {},
+            b: {}
+          },
+          always: () => {
+            if (1 + 1 === 2) {
+              return { target: '.a' };
+            } else {
+              return { target: '.b' };
+            }
+          }
+        }
+      }
+    });
+    const actorRef = createActor(machine).start();
+    actorRef.send({
+      type: 'event'
+    });
+
+    expect(actorRef.getSnapshot().value).toEqual({ active: 'a' });
+  });
+
+  it("shouldn't end up in an infinite loop when executing a fire-and-forget action that doesn't change state", () => {
+    let count = 0;
+    const machine = createMachine({
+      initial: 'idle',
+      states: {
+        idle: {
+          on: {
+            event: { target: 'active' }
+          }
+        },
+        active: {
+          initial: 'a',
+          states: {
+            a: {}
+          },
+          always: (_, enq) => {
+            enq(() => {
+              count++;
+              if (count > 5) {
+                throw new Error('Infinite loop detected');
+              }
+            });
+            return { target: '.a' };
+          }
+        }
+      }
+    });
+
+    const actorRef = createActor(machine);
+
+    actorRef.start();
+    actorRef.send({
+      type: 'event'
+    });
+
+    expect(actorRef.getSnapshot().value).toEqual({ active: 'a' });
+    expect(count).toBe(1);
+  });
+
+  it('should loop (but not infinitely) for assign actions', () => {
+    const machine = createMachine({
+      schemas: {
+        context: z.object({
+          count: z.number()
+        })
+      },
+      context: { count: 0 },
+      initial: 'counting',
+      states: {
+        counting: {
+          always: ({ context }) => {
+            if (context.count < 5) {
+              return {
+                context: { count: context.count + 1 }
+              };
+            }
+          }
+        }
+      }
+    });
+
+    const actorRef = createActor(machine).start();
+
+    expect(actorRef.getSnapshot().context.count).toEqual(5);
+  });
+
+  it("should execute an always transition after a raised transition even if that raised transition doesn't change the state", () => {
+    const spy = vi.fn();
+    let counter = 0;
+    const machine = createMachine({
+      always: (_, enq) => {
+        enq((...args) => {
+          spy(...args);
+        }, counter);
+      },
+      on: {
+        EV: (_, enq) => {
+          enq.raise({ type: 'RAISED' });
+        },
+        RAISED: (_, enq) => {
+          enq(() => {
+            ++counter;
+          });
+        }
+      }
+    });
+    const actorRef = createActor(machine).start();
+    spy.mockClear();
+    actorRef.send({ type: 'EV' });
+
+    expect(spy.mock.calls).toEqual([
+      // called in response to the `EV` event
+      [0],
+      // called in response to the `RAISED` event; action args are resolved
+      // during the pure transition before executable effects run
+      [0]
+    ]);
   });
 });

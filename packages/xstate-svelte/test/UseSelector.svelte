@@ -1,54 +1,45 @@
 <script lang="ts">
-  import { interpret } from 'xstate';
-  import { createModel } from 'xstate/model';
-  import { useSelector } from '../src';
+  import { createActor, createMachine } from 'xstate';
+  import { useActorRef, useSelector } from '../src/index.ts';
 
-  const model = createModel(
-    {
+  const machine = createMachine({
+    initial: 'idle',
+    context: {
       count: 0,
       anotherCount: 0
     },
-    {
-      events: {
-        INCREMENT: () => ({}),
-        INCREMENT_ANOTHER: () => ({})
-      }
-    }
-  );
-
-  const machine = model.createMachine({
-    initial: 'idle',
-    context: model.initialContext,
     states: {
       idle: {
         on: {
-          INCREMENT: {
-            actions: model.assign({ count: ({ count }) => count + 1 })
-          },
-          INCREMENT_ANOTHER: {
-            actions: model.assign({
-              anotherCount: ({ anotherCount }) => anotherCount + 1
-            })
-          }
+          INCREMENT: ({ context }) => ({
+            context: { ...context, count: context.count + 1 }
+          }),
+          INCREMENT_ANOTHER: ({ context }) => ({
+            context: { ...context, anotherCount: context.anotherCount + 1 }
+          })
         }
       }
     }
   });
 
-  const service = interpret(machine).start();
+  const actorRef = useActorRef(machine);
 
-  const count = useSelector(service, (state) => state.context.count);
+  const snapshot = useSelector(actorRef, (s) => s);
+  const count = useSelector(actorRef, (s) => s.context.count);
 
   let withSelector = 0;
   $: $count && withSelector++;
   let withoutSelector = 0;
-  $: $service.context.count && withoutSelector++;
+  $: $snapshot.context.count && withoutSelector++;
 </script>
 
-<button data-testid="count" on:click={() => service.send('INCREMENT')}
-  >Increment count</button
+<button
+  data-testid="count"
+  on:click={() => actorRef.send({ type: 'INCREMENT' })}>Increment count</button
 >
-<button data-testid="another" on:click={() => service.send('INCREMENT_ANOTHER')}
+<button
+  data-testid="another"
+  on:click={() => actorRef.send({ type: 'INCREMENT_ANOTHER' })}
   >Increment another count</button
 >
 

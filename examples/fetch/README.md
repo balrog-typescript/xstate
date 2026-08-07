@@ -1,9 +1,10 @@
-# Fetch example
+# Fetch
 
-[Open in CodeSandbox](https://githubbox.com/davidkpiano/xstate/tree/main/examples/fetch)
+This is a simple fetch example built with:
 
-## Run this example locally
+- XState v5
+- Parcel
 
-1. `yarn install`
-1. `yarn start`
-1. Open http://localhost:1234
+## [Open in CodeSandbox](https://codesandbox.io/p/sandbox/github/statelyai/xstate/tree/main/examples/fetch)
+
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/statelyai/xstate/tree/main/examples/fetch)

@@ -1,21 +1,25 @@
-import { createMachine, interpret } from 'xstate';
+import { createActor } from 'xstate';
+import { fetchMachine } from './fetchMachine';
 
-const fetchMachine = createMachine({
-  initial: 'idle',
-  states: {
-    idle: {
-      on: {
-        FETCH: 'loading'
+export async function getGreeting(name: string): Promise<{ greeting: string }> {
+  return new Promise((res, rej) => {
+    setTimeout(() => {
+      if (Math.random() < 0.5) {
+        rej();
+        return;
       }
-    },
-    loading: {}
-  }
+      res({
+        greeting: `Hello, ${name}!`
+      });
+    }, 1000);
+  });
+}
+
+const fetchActor = createActor(fetchMachine);
+fetchActor.subscribe((state) => {
+  console.log('Value:', state.value);
+  console.log('Context:', state.context);
 });
+fetchActor.start();
 
-const fetchService = interpret(fetchMachine)
-  .onTransition((state) => {
-    console.log(state);
-  })
-  .start();
-
-fetchService.send('FETCH');
+fetchActor.send({ type: 'FETCH' });

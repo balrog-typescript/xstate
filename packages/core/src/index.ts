@@ -1,79 +1,193 @@
-import { matchesState } from './utils';
-import { mapState } from './mapState';
-import { StateNode } from './StateNode';
-import { State } from './State';
-import { createMachine } from './Machine';
-import {
-  raise,
-  send,
-  sendParent,
-  sendUpdate,
-  log,
-  cancel,
-  stop,
-  assign,
-  after,
-  done,
-  respond,
-  doneInvoke,
-  forwardTo,
-  escalate,
-  choose,
-  pure
-} from './actions';
-import { interpret, Interpreter, InterpreterStatus } from './interpreter';
-import { matchState } from './match';
-export { StateMachine as MachineNode } from './StateMachine';
-export { SimulatedClock } from './SimulatedClock';
+// Explicit named re-exports (not `export *`): the root entry must stay
+// statically analyzable by Node's CJS export lexer, which loses names that
+// only flow through a star re-export when this file is compiled to CJS
+// (e.g. preconstruct dev mode under `tsx`).
 export {
-  spawn,
-  spawnFrom,
-  spawnMachine,
-  spawnPromise,
-  spawnObservable,
-  spawnCallback
-} from './actor';
-export { createSchema } from './schema';
-
-const actions = {
-  raise,
-  send,
-  sendParent,
-  sendUpdate,
-  log,
-  cancel,
-  stop,
-  assign,
-  after,
-  done,
-  respond,
-  forwardTo,
-  escalate,
-  choose,
-  pure
-};
-
+  createAsyncLogic,
+  createCallbackLogic,
+  createEmptyActor,
+  createEventObservableLogic,
+  createListenerLogic,
+  createLogic,
+  createObservableLogic,
+  createSubscriptionLogic,
+  listenerLogic,
+  subscriptionLogic,
+  TimeoutError,
+  type AsyncActorLogic,
+  type AsyncActorRef,
+  type AsyncLogicArgs,
+  type AsyncLogicConfig,
+  type AsyncLogicEnqueue,
+  type AsyncLogicFunction,
+  type AsyncSnapshot,
+  type CallbackActorLogic,
+  type CallbackActorRef,
+  type CallbackLogicConfig,
+  type CallbackLogicFunction,
+  type CallbackSnapshot,
+  type EventObservableLogicConfig,
+  type EventObservableLogicFunction,
+  type ListenerActorLogic,
+  type ListenerActorRef,
+  type ListenerInput,
+  type ListenerSnapshot,
+  type LogicActorLogic,
+  type LogicActorRef,
+  type LogicArgs,
+  type LogicConfig,
+  type LogicEffect,
+  type LogicEffectState,
+  type LogicEnqueue,
+  type LogicFunction,
+  type LogicPatch,
+  type LogicSnapshot,
+  type ObservableActorLogic,
+  type ObservableActorRef,
+  type ObservableLogicConfig,
+  type ObservableLogicFunction,
+  type ObservableSnapshot,
+  type SubscriptionActorLogic,
+  type SubscriptionActorRef,
+  type SubscriptionInput,
+  type SubscriptionMappers,
+  type SubscriptionSnapshot
+} from './actors/index.ts';
+export { assertEvent } from './assert.ts';
 export {
-  StateNode,
-  State,
+  Actor,
+  createActor,
+  type RequiredActorOptionsKeys as RequiredActorOptionsKeys
+} from './createActor.ts';
+export { createMachine, createStateConfig } from './createMachine.ts';
+export {
+  createFSM,
+  type FSMActorLogic,
+  type FSMConfig,
+  type FSMSnapshot
+} from './fsm.ts';
+export { createMachineFromConfig } from './createMachineFromConfig.ts';
+export type {
+  ActionJSON,
+  GuardJSON,
+  InvokeJSON,
+  MachineJSON,
+  StateNodeJSON,
+  TransitionJSON
+} from './createMachineFromConfig.ts';
+export {
+  machineConfigToJSON,
+  serializeMachine,
+  type CodeExpression
+} from './serialize.ts';
+export { mapState } from './mapState.ts';
+export {
+  machineVersions,
+  type AdaptEventsOptions,
+  type EventAdapterHandlers,
+  type EventHistorySource,
+  type MigrateSnapshotOptions,
+  type MachineEventSchema,
+  type MachineSnapshotSchema,
+  type MachineVersionsOptions,
+  type MachineVersionDescriptor,
+  type ParsedPersistedSnapshot,
+  type PersistedMachineIdentity,
+  type PersistedMachineSnapshot,
+  type PersistedSnapshotDataFrom,
+  type PersistedSnapshotSource,
+  type SnapshotMigrationHandlers,
+  type PersistedSnapshotFrom
+} from './machineVersions.ts';
+export {
+  types,
+  isTypeSchema,
+  type StandardSchemaV1,
+  type TypeSchema
+} from './schema.types.ts';
+export type {
+  ActorValidationBoundary,
+  ActorValidationEventOrigin,
+  ActorValidationRequest,
+  ActorLogicValidator
+} from './validation.types.ts';
+export { createSystem, setup } from './setup.ts';
+export type {
+  AnySetupConfig,
+  SetupConfig,
+  SetupReturn,
+  SetupReturnFromConfig,
+  SetupSchemas,
+  SystemActorMap,
+  SystemConfig,
+  SystemRuntime,
+  SetupStateSchema,
+  SetupStateSchemas
+} from './setup.ts';
+export { getInitialSnapshot, getNextSnapshot } from './getNextSnapshot.ts';
+export type {
+  InspectionEvent,
+  ActorInspectionEvent,
+  DeadLetterInspectionEvent,
+  TransitionInspectionEvent,
+  ActionRecord,
+  SentRecord
+} from './inspection.ts';
+export { SimulatedClock } from './SimulatedClock.ts';
+export { type Spawner } from './spawn.ts';
+export { isMachineSnapshot, type MachineSnapshot } from './State.ts';
+export { StateMachine } from './StateMachine.ts';
+export { StateNode } from './StateNode.ts';
+export { getStateNodes } from './stateUtils.ts';
+export type {
+  ActorSystem,
+  ActorSystemRuntime,
+  AnyActorSystem
+} from './system.ts';
+export { toPromise } from './toPromise.ts';
+export type * from './types.ts';
+export { SpecialTargets } from './types.ts';
+export type {
+  Next_MachineConfig as MachineConfig,
+  Next_StateNodeConfig as StateNodeConfig,
+  Next_InvokeConfig as InvokeConfig,
+  Next_TransitionConfigOrTarget as TransitionConfigOrTarget,
+  Sources,
+  InferEvents,
+  WidenLiterals
+} from './types.v6.ts';
+export {
+  getAllOwnEventDescriptors as __unsafe_getAllOwnEventDescriptors,
   matchesState,
-  mapState,
-  actions,
-  assign,
-  send,
-  sendParent,
-  sendUpdate,
-  forwardTo,
-  interpret,
-  Interpreter,
-  InterpreterStatus,
-  matchState,
-  doneInvoke,
-  createMachine
-};
+  checkStateIn,
+  pathToStateValue,
+  toObserver
+} from './utils.ts';
+export {
+  transition,
+  initialTransition,
+  getMicrosteps,
+  getInitialMicrosteps,
+  getNextTransitions
+} from './transition.ts';
+export {
+  executeEffects,
+  isBuiltInExecutableAction
+} from './transitionActions.ts';
+export {
+  getEffectDescriptor,
+  type EffectDescriptor
+} from './effectDescriptor.ts';
+export {
+  deliverEvent,
+  runStep,
+  stopActor,
+  terminateActor
+} from './runtimeHelpers.ts';
+export { waitFor } from './waitFor.ts';
 
-export * from './types';
-
-// TODO: decide from where those should be exported
-export { pathToStateValue, flatten, keys } from './utils';
-export { getStateNodes } from './stateUtils';
+declare global {
+  interface SymbolConstructor {
+    readonly observable: symbol;
+  }
+}

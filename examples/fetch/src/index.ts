@@ -1,21 +1,16 @@
-import { createMachine, interpret } from 'xstate';
+import { createActor } from 'xstate';
+import { createInspector } from '@statelyai/sdk';
+import { fetchMachine } from './fetchMachine';
 
-const fetchMachine = createMachine({
-  initial: 'idle',
-  states: {
-    idle: {
-      on: {
-        FETCH: 'loading'
-      }
-    },
-    loading: {}
-  }
+const inspector = createInspector();
+
+const fetchActor = createActor(fetchMachine, { inspect: inspector.inspect });
+
+fetchActor.subscribe((snapshot) => {
+  console.log('Value:', snapshot.value);
+  console.log('Context:', snapshot.context);
 });
 
-const fetchService = interpret(fetchMachine)
-  .onTransition((state) => {
-    console.log(state);
-  })
-  .start();
+fetchActor.start();
 
-fetchService.send('FETCH');
+fetchActor.send({ type: 'FETCH' });
